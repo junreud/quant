@@ -150,8 +150,8 @@ def run_full_pipeline(
     # Risk Target 생성
     y_risk_target = y.abs()
     
-    risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=300)
-    logger.info(f"Risk Model Features (Top 300): {risk_features[:10]} ...")
+    risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=1000)
+    logger.info(f"Risk Model Features (Top 1000): {risk_features[:10]} ...")
     
     # Metric calculator
     metric_calculator = CompetitionMetric(

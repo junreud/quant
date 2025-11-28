@@ -1,0 +1,22 @@
+{
+  "name": "exp_20251128_143958",
+  "timestamp": "2025-11-28T14:39:58.230302",
+  "config": {
+    "cv_strategy": "purged_walkforward",
+    "cv_splits": 5,
+    "train_size": 2000,
+    "test_size": 500,
+    "lgbm_n_estimators": 127,
+    "lgbm_learning_rate": 0.0458793609907387
+  },
+  "results": {
+    "oof_score": 1.0387726448876196,
+    "oof_sharpe": 1.0387726448876196,
+    "test_score": 0.6101818761654139,
+    "test_sharpe": 0.6101818761654139,
+    "cv_mean": 1.1004360634842243,
+    "cv_std": 0.3641323886173516,
+    "n_features": 50
+  },
+  "notes": "Purged WF baseline - Top feature: P11_macd"
+}

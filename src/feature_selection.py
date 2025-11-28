@@ -1,0 +1,106 @@
+"""
+Feature Selection Module
+
+피처 선택을 위한 유틸리티 클래스.
+"""
+
+import pandas as pd
+import numpy as np
+from typing import List, Union
+import lightgbm as lgb
+from src.utils import get_logger
+
+logger = get_logger(name="feature_selection", level="INFO")
+
+class FeatureSelector:
+    """
+    피처 선택 클래스.
+    
+    기능:
+    1. 상관관계 기반 다중공선성 제거
+    2. LGBM Feature Importance 기반 선택
+    """
+    
+    def __init__(self):
+        self.selected_features = None
+        
+    def remove_collinear(self, df: pd.DataFrame, threshold: float = 0.95) -> List[str]:
+        """
+        상관관계가 높은 피처 제거.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            피처 데이터
+        threshold : float
+            상관관계 임계값 (절대값 기준)
+            
+        Returns
+        -------
+        List[str]
+            선택된 피처 리스트
+        """
+        logger.info(f"🔍 Removing collinear features (threshold={threshold})...")
+        
+        # 상관계수 행렬 계산
+        corr_matrix = df.corr().abs()
+        
+        # 상삼각행렬만 선택
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        
+        # 임계값 넘는 컬럼 찾기
+        to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+        
+        selected = [col for col in df.columns if col not in to_drop]
+        
+        logger.info(f"   Dropped {len(to_drop)} features. Remaining: {len(selected)}")
+        return selected
+
+    def select_by_importance(self, X: pd.DataFrame, y: pd.Series, top_k: int = 50, 
+                           lgbm_params: dict = None) -> List[str]:
+        """
+        LGBM Feature Importance 기반 피처 선택.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame
+            피처 데이터
+        y : pd.Series
+            타겟 데이터
+        top_k : int
+            선택할 상위 피처 개수
+        lgbm_params : dict
+            LGBM 파라미터 (없으면 기본값 사용)
+            
+        Returns
+        -------
+        List[str]
+            선택된 피처 리스트
+        """
+        logger.info(f"🔍 Selecting top {top_k} features by LGBM importance...")
+        
+        if lgbm_params is None:
+            lgbm_params = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'verbosity': -1,
+                'seed': 42
+            }
+            
+        # LGBM Dataset
+        dtrain = lgb.Dataset(X, label=y)
+        
+        # Train model (lightweight)
+        model = lgb.train(lgbm_params, dtrain, num_boost_round=100)
+        
+        # Get importance
+        importance = pd.DataFrame({
+            'feature': X.columns,
+            'importance': model.feature_importance(importance_type='gain')
+        }).sort_values('importance', ascending=False)
+        
+        # Select top k
+        selected = importance.head(top_k)['feature'].tolist()
+        
+        logger.info(f"   Selected {len(selected)} features.")
+        return selected

@@ -1,0 +1,79 @@
+# Project Configuration
+project:
+  name: "quant_strategy"
+  version: "0.1.0"
+  description: "Low Risk, Medium Return Quant Strategy"
+
+# Data Paths
+data:
+  train: "data/raw/train.csv"
+  test: "data/raw/test.csv"
+  processed_dir: "data/processed"
+
+# Model Configuration
+model:
+  type: "lightgbm"
+  target: "alpha" # or "forward_returns"
+  random_state: 42
+
+# LightGBM Parameters
+lgbm:
+  objective: "regression"
+  metric: "rmse"
+  boosting_type: "gbdt"
+  colsample_bytree: 0.9717117220241047
+  learning_rate: 0.2025894421289746
+  max_depth: 10
+  min_child_samples: 49
+  n_estimators: 897
+  num_leaves: 112
+  reg_alpha: 6.729363639115598e-05
+  reg_lambda: 0.0009932956503558112
+  subsample: 0.8858383129967532
+  random_state: 42
+  verbose: -1
+
+# Feature Engineering
+features:
+  use_lagged: true # Legacy parameter, kept for compatibility
+  add_interactions: true
+  fill_missing_strategy: false # or "median", "mean", "zero", false
+  use_time_series_features: true
+  use_advanced_features: true
+  use_market_regime_features: true
+  feature_selection:
+    enabled: true
+    method: "importance" # or "collinear"
+    top_k: 100
+
+# Risk Management
+risk:
+  max_position: 2.0
+  min_position: 0.0
+  volatility_threshold: 1.2
+  conservative_mode: true
+  reduce_position_on_high_vol: true
+
+# Evaluation Metric
+metric:
+  vol_threshold: 1.2
+  use_return_penalty: true
+  min_periods: 30
+
+# Cross Validation
+cv:
+  strategy: "purged_walkforward" # timeseries, purged_walkforward
+  n_splits: 5
+  # Purged Walk-Forward 전용
+  train_size: 2000
+  test_size: 500
+  purge_gap: 20
+  # 최종 테스트
+  final_holdout: 180
+
+# Output
+output:
+  submission_dir: "results"
+  model_dir: "models"
+  log_dir: "logs"
+  skip_package: false

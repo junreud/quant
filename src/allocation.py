@@ -70,5 +70,44 @@ def binary_allocation(
         return np.where(y_pred > 0, positive_val, negative_val)
 
 
+def risk_adjusted_allocation(
+    return_pred: Union[np.ndarray, float],
+    risk_pred: Union[np.ndarray, float],
+    k: float = 1.0,
+    max_position: float = 2.0
+) -> Union[np.ndarray, float]:
+    """
+    Risk-Adjusted Allocation (Dual-Model).
+    Position = k * (Return / Risk)
+    
+    Parameters
+    ----------
+    return_pred : array or float
+        수익률 예측값
+    risk_pred : array or float
+        변동성(Risk) 예측값
+    k : float
+        스케일링 상수 (Leverage Factor)
+    max_position : float
+        최대 포지션 제한
+        
+    Returns
+    -------
+    array or float
+        Allocation [0, max_position]
+    """
+    # 0 나누기 방지
+    safe_risk = np.maximum(risk_pred, 1e-6)
+    
+    # 샤프 비율 기반 할당
+    raw_allocation = k * (return_pred / safe_risk)
+    
+    # 방향성 유지 (Return이 음수면 포지션도 음수? 아니면 0?)
+    # 규칙: 0 <= Position <= 2 이므로, Return이 음수면 0으로 clip됨.
+    # 하지만 raw_allocation 자체가 음수일 수 있음.
+    
+    return np.clip(raw_allocation, 0.0, max_position)
+
+
 # 기본 전략 선택
 default_allocation = smart_allocation

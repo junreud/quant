@@ -64,7 +64,7 @@ class DataPreprocessor:
         
         return self
     
-    def transform(self, df: pd.DataFrame, return_target: bool = False) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, return_target: bool = False, target_col: str = 'forward_returns') -> pd.DataFrame:
         """
         데이터 전처리.
         
@@ -74,6 +74,8 @@ class DataPreprocessor:
             변환할 데이터
         return_target : bool
             target도 함께 반환할지 여부
+        target_col : str
+            반환할 타겟 컬럼명 (Default: 'forward_returns')
             
         Returns
         -------
@@ -123,16 +125,16 @@ class DataPreprocessor:
             X = X.fillna(0)
         
         if return_target:
-            if 'forward_returns' not in df.columns:
-                raise ValueError("Target column 'forward_returns' not found!")
-            y = df['forward_returns'].copy()
+            if target_col not in df.columns:
+                raise ValueError(f"Target column '{target_col}' not found!")
+            y = df[target_col].copy()
             # NaN 제거 (타겟이 없는 행은 학습에서 제외)
             valid_mask = ~y.isnull()
             return X[valid_mask], y[valid_mask]
         
         return X
     
-    def fit_transform(self, df: pd.DataFrame, return_target: bool = True):
+    def fit_transform(self, df: pd.DataFrame, return_target: bool = True, target_col: str = 'forward_returns'):
         """
         fit + transform
         
@@ -153,7 +155,7 @@ class DataPreprocessor:
         elif self.fillna_strategy == False:
             logger.info("Filled with False")
 
-        return self.transform(df, return_target=return_target)
+        return self.transform(df, return_target=return_target, target_col=target_col)
     
     def get_feature_names(self):
         """피처 이름 반환"""

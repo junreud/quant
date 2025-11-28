@@ -131,10 +131,24 @@ def run_full_pipeline(
         logger.info(f"Using TimeSeriesSplit (n_splits={cv_splits})")
     
     oof_predictions = np.zeros(len(X_cv))
+    oof_risk_predictions = np.zeros(len(X_cv)) # Risk OOF
     oof_mask = np.zeros(len(X_cv), dtype=bool)
-    models = []
+    
+    models_return = []
+    models_risk = []
     
     lgbm_params = config['lgbm'].copy()
+    
+    # Risk Model Params (MAE for robust volatility estimation)
+    risk_lgbm_params = lgbm_params.copy()
+    risk_lgbm_params['objective'] = 'regression_l1' # MAE
+    risk_lgbm_params['metric'] = 'mae'
+    
+    # Risk Model Features
+    from src.features import RISK_MODEL_FEATURES
+    # 실제 존재하는 피처만 선택
+    risk_features = [f for f in RISK_MODEL_FEATURES if f in X.columns]
+    logger.info(f"Risk Model Features: {len(risk_features)} selected")
     
     # Metric calculator
     metric_calculator = CompetitionMetric(
@@ -145,6 +159,8 @@ def run_full_pipeline(
     
     fold_scores = []
     
+    from src.allocation import risk_adjusted_allocation
+    
     for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X_cv)):
         logger.info(f"\n  Fold {fold_idx + 1}/{cv_splits} | Train: {len(train_idx)} | Val: {len(val_idx)}")
         
@@ -153,16 +169,35 @@ def run_full_pipeline(
         X_val_fold = X_cv.iloc[val_idx]
         y_val_fold = y_cv.iloc[val_idx]
         
-        model = lgb.LGBMRegressor(**lgbm_params)
-        model.fit(X_train_fold, y_train_fold, eval_set=[(X_val_fold, y_val_fold)], eval_metric='rmse')
+        # 1. Return Model Training
+        model_return = lgb.LGBMRegressor(**lgbm_params)
+        model_return.fit(X_train_fold, y_train_fold, eval_set=[(X_val_fold, y_val_fold)], eval_metric='rmse', callbacks=[lgb.log_evaluation(0)])
+        
+        # 2. Risk Model Training (Target: abs(returns))
+        y_train_risk = y_train_fold.abs()
+        y_val_risk = y_val_fold.abs()
+        
+        model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
+        model_risk.fit(X_train_fold[risk_features], y_train_risk, eval_set=[(X_val_fold[risk_features], y_val_risk)], eval_metric='mae', callbacks=[lgb.log_evaluation(0)])
         
         # OOF predictions
-        fold_pred = model.predict(X_val_fold)
-        oof_predictions[val_idx] = fold_pred
+        pred_return = model_return.predict(X_val_fold)
+        pred_risk = model_risk.predict(X_val_fold[risk_features])
+        
+        oof_predictions[val_idx] = pred_return
+        oof_risk_predictions[val_idx] = pred_risk
         oof_mask[val_idx] = True
         
-        # Fold score
-        fold_allocations = smart_allocation(fold_pred, center=1.0, sensitivity=20)
+        # Fold score (Risk-Adjusted Allocation)
+        # k값은 하이퍼파라미터지만 일단 1.0 또는 config에서 가져옴
+        # 여기서는 smart_allocation의 sensitivity와 유사한 역할을 하는 k를 찾아야 함.
+        # 기존 smart_allocation: 1.0 + pred * 20
+        # Risk-Adjusted: k * (pred / risk)
+        # risk가 평균적으로 0.01 수준이라면, pred/risk는 1.0 수준.
+        # 따라서 k=1.0이면 포지션이 1.0 근처가 됨.
+        
+        fold_allocations = risk_adjusted_allocation(pred_return, pred_risk, k=0.5) # k=0.5 (Conservative start)
+        
         val_df_fold = df_cv.iloc[val_idx]
         
         fold_result = metric_calculator.calculate_score(
@@ -173,9 +208,10 @@ def run_full_pipeline(
         )
         
         fold_scores.append(fold_result['score'])
-        models.append(model)
+        models_return.append(model_return)
+        models_risk.append(model_risk)
         
-        logger.info(f"  ✅ Fold {fold_idx + 1} Train_idx: {train_idx[0]} ~ {train_idx[-1]} | Val_idx: {val_idx[0]} ~ {val_idx[-1]} | Score: {fold_result['score']:.6f}")
+        logger.info(f"  ✅ Fold {fold_idx + 1} Score: {fold_result['score']:.6f} | Return RMSE: {model_return.best_score_['valid_0']['rmse']:.6f} | Risk MAE: {model_risk.best_score_['valid_0']['l1']:.6f}")
     
     logger.info(f"\n✅ CV Training complete | OOF samples: {oof_mask.sum()}/{len(X_cv)}")
     logger.info(f"📊 Fold Scores: {', '.join([f'{s:.4f}' for s in fold_scores])}")
@@ -189,10 +225,11 @@ def run_full_pipeline(
     logger.info("=" * 80)
     
     oof_df = df_cv[oof_mask]
-    oof_pred = oof_predictions[oof_mask]
+    oof_pred_ret = oof_predictions[oof_mask]
+    oof_pred_risk = oof_risk_predictions[oof_mask]
     
     # Allocation
-    allocations = smart_allocation(oof_pred, center=1.0, sensitivity=20)
+    allocations = risk_adjusted_allocation(oof_pred_ret, oof_pred_risk, k=0.5)
     
     results = metric_calculator.calculate_score(
         allocations=allocations,
@@ -219,10 +256,15 @@ def run_full_pipeline(
     logger.info("🏁 Step 4: Final Model Training (CV data only)")
     logger.info("=" * 80)
     
-    final_model = lgb.LGBMRegressor(**lgbm_params)
-    final_model.fit(X_cv, y_cv)
+    # Return Model
+    final_model_return = lgb.LGBMRegressor(**lgbm_params)
+    final_model_return.fit(X_cv, y_cv)
     
-    logger.info(f"✅ Final model trained on {len(X_cv)} samples")
+    # Risk Model
+    final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
+    final_model_risk.fit(X_cv[risk_features], y_cv.abs())
+    
+    logger.info(f"✅ Final models trained on {len(X_cv)} samples")
     
     # ========================================
     # Step 5: 최종 테스트 (마지막 180일)
@@ -231,8 +273,10 @@ def run_full_pipeline(
     logger.info("🧪 Step 5: Final Test Evaluation (Last 180 days)")
     logger.info("=" * 80)
     
-    test_pred = final_model.predict(X_test)
-    test_allocations = smart_allocation(test_pred, center=1.0, sensitivity=12)
+    test_pred_ret = final_model_return.predict(X_test)
+    test_pred_risk = final_model_risk.predict(X_test[risk_features])
+    
+    test_allocations = risk_adjusted_allocation(test_pred_ret, test_pred_risk, k=0.5)
     
     test_results = metric_calculator.calculate_score(
         allocations=test_allocations,
@@ -257,9 +301,14 @@ def run_full_pipeline(
     
     # 최종 모델 재학습 (전체 데이터)
     logger.info(f"\n🔄 Retraining on ALL data for submission...")
-    final_model_all = lgb.LGBMRegressor(**lgbm_params)
-    final_model_all.fit(X, y)
-    logger.info(f"✅ Final model retrained on {len(X)} samples")
+    
+    final_model_return_all = lgb.LGBMRegressor(**lgbm_params)
+    final_model_return_all.fit(X, y)
+    
+    final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
+    final_model_risk_all.fit(X[risk_features], y.abs())
+    
+    logger.info(f"✅ Final models retrained on {len(X)} samples")
     
     # ========================================
     # Step 6: 모델 저장
@@ -271,30 +320,31 @@ def run_full_pipeline(
     model_dir = project_root / config['output']['model_dir']
     ensure_dir(model_dir)
     
-    model_path = model_dir / "simple_model.pkl"
+    model_path = model_dir / "dual_model.pkl"
     with open(model_path, 'wb') as f:
         pickle.dump({
-            'model': final_model_all,  # 전체 데이터로 학습한 모델
+            'model_return': final_model_return_all,
+            'model_risk': final_model_risk_all,
             'feature_cols': feature_cols,
+            'risk_features': risk_features,
             'config': config,
             'oof_score': results['score'],
             'test_score': test_results['score'],
-            'cv_models': models,
             'pipeline': pipeline
         }, f)
     
     logger.info(f"✅ Model saved: {model_path}")
     
-    # Feature importance
+    # Feature importance (Return Model)
     importance_df = pd.DataFrame({
         'feature': feature_cols,
-        'importance': final_model_all.feature_importances_
+        'importance': final_model_return_all.feature_importances_
     }).sort_values('importance', ascending=False)
     
-    importance_path = project_root / config['output']['submission_dir'] / 'feature_importance.csv'
+    importance_path = project_root / config['output']['submission_dir'] / 'feature_importance_return.csv'
     importance_df.to_csv(importance_path, index=False)
     
-    logger.info(f"\nTop 5 features:")
+    logger.info(f"\nTop 5 features (Return Model):")
     for idx, row in importance_df.head(5).iterrows():
         logger.info(f"  {row['feature']}: {row['importance']:.2f}")
     

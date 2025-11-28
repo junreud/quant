@@ -1,0 +1,22 @@
+{
+  "name": "exp_20251128_194535",
+  "timestamp": "2025-11-28T19:45:35.869506",
+  "config": {
+    "cv_strategy": "purged_walkforward",
+    "cv_splits": 5,
+    "train_size": 2000,
+    "test_size": 500,
+    "lgbm_n_estimators": 897,
+    "lgbm_learning_rate": 0.2025894421289746
+  },
+  "results": {
+    "oof_score": 0.18401632506071555,
+    "oof_sharpe": 0.4474617232700744,
+    "test_score": 0.4077951121579554,
+    "test_sharpe": 0.6738399687812107,
+    "cv_mean": 0.16892124907556808,
+    "cv_std": 0.4200741367197509,
+    "n_features": 100
+  },
+  "notes": "Purged WF baseline - Top feature: market_ma_20d"
+}

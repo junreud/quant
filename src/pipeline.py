@@ -146,6 +146,8 @@ class Pipeline:
         return self.feature_engineer.get_feature_names()
 
 
+
+
 def create_pipeline(**kwargs):
     """파이프라인 생성 헬퍼 함수"""
     return Pipeline(**kwargs)

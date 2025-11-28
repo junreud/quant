@@ -104,3 +104,37 @@ class FeatureSelector:
         
         logger.info(f"   Selected {len(selected)} features.")
         return selected
+
+    def select_by_correlation(self, X: pd.DataFrame, y: pd.Series, method: str = 'spearman', top_k: int = 20) -> List[str]:
+        """
+        상관관계 기반 피처 선택.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame
+            피처 데이터
+        y : pd.Series
+            타겟 데이터
+        method : str
+            상관계수 방법 ('pearson', 'spearman')
+        top_k : int
+            선택할 상위 피처 개수
+            
+        Returns
+        -------
+        List[str]
+            선택된 피처 리스트
+        """
+        logger.info(f"🔍 Selecting top {top_k} features by {method} correlation...")
+        
+        # 데이터 병합 (인덱스 기준)
+        # X와 y의 인덱스가 맞아야 함
+        
+        # 상관관계 계산
+        corrs = X.corrwith(y, method=method).abs()
+        
+        # 상위 k개 선정
+        selected = corrs.sort_values(ascending=False).head(top_k).index.tolist()
+        
+        logger.info(f"   Selected {len(selected)} features.")
+        return selected

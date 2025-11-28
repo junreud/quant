@@ -11,14 +11,6 @@ from src.utils import get_logger
 
 logger = get_logger(name="feature_engineering", level="INFO")
 
-# Risk Model용 Top Features (EDA 기반)
-RISK_MODEL_FEATURES = [
-    'E19_roll_mean_5', 'E19', 'market_vol_20d', 'E19_roll_mean_10', 'E19_lag_1',
-    'V7', 'E19_lag_2', 'V7_lag_1', 'market_vol_60d', 'V7_roll_mean_5',
-    'E19_roll_mean_20', 'E19_lag_3', 'V7_lag_2', 'V13_roll_std_10', 'V13_roll_std_5',
-    'V7_lag_3', 'V7_roll_mean_10', 'V13_roll_std_20', 'E19_lag_5', 'V7_lag_5'
-]
-
 class FeatureEngineer:
     """
     피처 엔지니어링 파이프라인.

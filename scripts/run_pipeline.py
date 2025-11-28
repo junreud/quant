@@ -141,14 +141,17 @@ def run_full_pipeline(
     
     # Risk Model Params (MAE for robust volatility estimation)
     risk_lgbm_params = lgbm_params.copy()
-    risk_lgbm_params['objective'] = 'regression_l1' # MAE
-    risk_lgbm_params['metric'] = 'mae'
     
-    # Risk Model Features
-    from src.features import RISK_MODEL_FEATURES
-    # 실제 존재하는 피처만 선택
-    risk_features = [f for f in RISK_MODEL_FEATURES if f in X.columns]
-    logger.info(f"Risk Model Features: {len(risk_features)} selected")
+    # Risk Model Features (Dynamic Selection)
+    # FeatureSelector를 사용하여 Risk Target(abs returns)과 상관관계가 높은 Feature 선별
+    from src.feature_selection import FeatureSelector
+    risk_selector = FeatureSelector()
+    
+    # Risk Target 생성
+    y_risk_target = y.abs()
+    
+    risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=300)
+    logger.info(f"Risk Model Features (Top 300): {risk_features[:10]} ...")
     
     # Metric calculator
     metric_calculator = CompetitionMetric(
@@ -248,6 +251,18 @@ def run_full_pipeline(
     logger.info(f"📉 Strategy Vol: {results['strategy_vol']:.2f}%")
     logger.info(f"📉 Market Vol: {results['market_vol']:.2f}%")
     logger.info(f"{'='*80}")
+    
+    # Save OOF predictions for analysis
+    oof_save_path = project_root / config['output']['submission_dir'] / 'oof_predictions.csv'
+    oof_df_save = pd.DataFrame({
+        'date_id': oof_df['date_id'] if 'date_id' in oof_df.columns else oof_df.index,
+        'actual_return': oof_df['forward_returns'].values,
+        'pred_return': oof_pred_ret,
+        'pred_risk': oof_pred_risk,
+        'allocation': allocations
+    })
+    oof_df_save.to_csv(oof_save_path, index=False)
+    logger.info(f"💾 OOF predictions saved to: {oof_save_path}")
     
     # ========================================
     # Step 4: 최종 모델 학습 (전체 CV 데이터)

@@ -39,8 +39,6 @@ class FeatureEngineer:
             고급 시계열 피처(Z-Score, RSI, MACD, Log Returns) 추가 여부
         use_market_regime_features : bool
             시장 국면 피처(Volatility Regime, Trend Regime) 추가 여부
-        fill_na : bool
-            생성된 피처의 결측치(NaN)를 0으로 채울지 여부 (Default: True)
         """
         self.add_interactions = add_interactions
         self.use_time_series_features = use_time_series_features

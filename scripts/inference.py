@@ -14,8 +14,9 @@ from pathlib import Path
 import sys
 import os
 
-# Add current directory to path so src can be imported if needed
+# Add current directory and parent directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 전처리 모듈 import (src 패키지 사용)
 try:
@@ -54,6 +55,7 @@ except ImportError as e:
 MODEL = None
 PIPELINE = None
 FEATURE_COLS = None
+HISTORY_BUFFER = None
 
 
 def load_model(model_path: str = "simple_model.pkl"):
@@ -94,34 +96,28 @@ def load_model(model_path: str = "simple_model.pkl"):
     with open(model_path, 'rb') as f:
         model_data = pickle.load(f)
     
-    MODEL = model_data['model']
+    MODEL = model_data # Dictionary containing 'model_return' and 'model_risk'
     PIPELINE = model_data['pipeline']  # 저장된 파이프라인 사용
     FEATURE_COLS = model_data['feature_cols']
     
     print(f"✅ Model loaded: {len(FEATURE_COLS)} features")
     print(f"✅ Pipeline loaded: {type(PIPELINE).__name__}")
 
+    # Load History Buffer
+    history_path = os.path.join(os.path.dirname(model_path), 'history.pkl')
+    if os.path.exists(history_path):
+        HISTORY_BUFFER = pd.read_pickle(history_path)
+        print(f"✅ History buffer loaded: {len(HISTORY_BUFFER)} samples")
+    else:
+        print("⚠️ History buffer not found. Cold start (first few predictions may be inaccurate).")
+        HISTORY_BUFFER = pd.DataFrame()
+
 
 def predict(test, model_path: str = "simple_model.pkl"):
     """
     Predict allocation for test data.
     
-    이 함수는 run_pipeline.py와 동일한 전처리 과정을 수행합니다:
-    1. Pipeline을 통한 전처리 (fillna 등)
-    2. 모델 추론
-    3. Allocation 변환
-    
-    Parameters
-    ----------
-    test : polars.DataFrame
-        Test data (Polars DataFrame)
-    model_path : str
-        Path to model file (relative to working directory)
-        
-    Returns
-    -------
-    float
-        Allocation value (0.0 ~ 2.0)
+    Uses a HISTORY_BUFFER to maintain past data for rolling feature calculation.
     """
     # Load model if not loaded
     load_model(model_path)
@@ -132,22 +128,42 @@ def predict(test, model_path: str = "simple_model.pkl"):
         test_pd = test.to_pandas()
     else:
         test_pd = test
+        
+    # Update History Buffer
+    global HISTORY_BUFFER
+    
+    # Append new data
+    if HISTORY_BUFFER is None or HISTORY_BUFFER.empty:
+        HISTORY_BUFFER = test_pd
+    else:
+        # Ensure columns match (handling potential missing columns in test)
+        # For simplicity, we assume test has same raw columns as history
+        HISTORY_BUFFER = pd.concat([HISTORY_BUFFER, test_pd], axis=0)
+        
+    # Keep max size (e.g., 200) to prevent memory issues
+    if len(HISTORY_BUFFER) > 200:
+        HISTORY_BUFFER = HISTORY_BUFFER.iloc[-200:]
     
     # ========================================
-    # run_pipeline.py와 동일한 전처리 과정
+    # Feature Engineering on Buffer
     # ========================================
-    # Pipeline을 통해 전처리 (fillna, feature engineering)
     try:
-        X_test = PIPELINE.transform(test_pd, return_target=False)
+        # Transform the WHOLE buffer
+        # This calculates rolling features correctly using past data
+        X_buffer = PIPELINE.transform(HISTORY_BUFFER, return_target=False)
+        
+        # Take the LAST row (current test sample)
+        X_test = X_buffer.iloc[[-1]]
+        
     except Exception as e:
         print(f"⚠️ Pipeline transform failed: {e}")
         print(f"   Fallback to manual preprocessing...")
         
-        # Fallback: 수동 전처리
+        # Fallback: Use raw features if possible (ignoring rolling)
         X_test = pd.DataFrame()
         for col in FEATURE_COLS:
             if col in test_pd.columns:
-                X_test[col] = test_pd[col]
+                X_test[col] = test_pd[col].iloc[-1]
             else:
                 X_test[col] = 0.0
         
@@ -155,18 +171,32 @@ def predict(test, model_path: str = "simple_model.pkl"):
         X_test = X_test.fillna(0)
     
     # ========================================
-    # 모델 추론
+    # 모델 추론 (Dual Model)
     # ========================================
-    y_pred = MODEL.predict(X_test)[0]
+    # 1. Return Prediction
+    pred_return = MODEL['model_return'].predict(X_test)[0]
+    
+    # 2. Risk Prediction
+    # Risk model might use different features, but we assume X_test has all features
+    # Pipeline usually returns all generated features.
+    # We need to select features if the model expects specific ones.
+    # But LGBM is robust to extra columns if feature names match.
+    # However, if we used feature selection, we should be careful.
+    # In run_pipeline.py, we saved 'feature_cols' which are ALL generated features.
+    # The models were trained on subsets (top_k).
+    # LightGBM selects features by name, so passing a superset DataFrame is fine.
+    
+    pred_risk = MODEL['model_risk'].predict(X_test)[0]
     
     # ========================================
-    # Allocation 변환 (run_pipeline.py의 smart_allocation과 동일)
+    # Allocation Logic (Risk-Adjusted)
     # ========================================
-    # Simple strategy: > 0 → 1.5, <= 0 → 0.5
-    if y_pred > 0:
-        allocation = 1.5
-    else:
-        allocation = 0.5
+    # k * (Return / Risk)
+    k = 0.5
+    vol_floor = 0.005 # Minimum volatility to prevent division by zero
+    
+    risk_val = max(pred_risk, vol_floor)
+    allocation = k * (pred_return / risk_val)
     
     # Clip to [0, 2]
     allocation = max(0.0, min(2.0, float(allocation)))

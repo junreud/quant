@@ -358,6 +358,33 @@ def run_full_pipeline(
     logger.info("=" * 80)
     
     model_dir = project_root / config['output']['model_dir']
+    model_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save Model
+    model_save_path = model_dir / 'dual_model.pkl'
+    with open(model_save_path, 'wb') as f:
+        pickle.dump({
+            'model_return': final_model_return_all,
+            'model_risk': final_model_risk_all,
+            'pipeline': pipeline,
+            'feature_cols': pipeline.feature_engineer.feature_cols,
+            'config': config
+        }, f)
+        
+    logger.info(f"✅ Model saved: {model_save_path}")
+    
+    # Save History for Inference (Last 200 rows)
+    # This is needed to calculate rolling features for the first few test samples
+    history_save_path = model_dir / 'history.pkl'
+    # Save only necessary columns for feature engineering
+    # We need raw columns, so we take them from the original df (before transform)
+    # But wait, 'df' variable in main() is already loaded.
+    # We need to ensure we have the raw data. 
+    # In run_full_pipeline, 'df' is the raw dataframe loaded from train.csv.
+    # We should use that.
+    history_df = df.tail(200).reset_index(drop=True)
+    history_df.to_pickle(history_save_path)
+    logger.info(f"✅ History buffer saved: {history_save_path} (200 samples)")
     ensure_dir(model_dir)
     
     model_path = model_dir / "dual_model.pkl"

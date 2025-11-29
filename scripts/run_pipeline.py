@@ -79,8 +79,8 @@ def run_full_pipeline(
         use_market_regime_features=config['features'].get('use_market_regime_features'),
         # Feature Selection
         use_feature_selection=config['features']['feature_selection']['enabled'],
-        feature_selection_method=config['features']['feature_selection']['method'],
-        top_k_features=config['features']['feature_selection']['top_k']
+        feature_selection_method=config['features']['feature_selection']['return_model']['method'],
+        top_k_features=config['features']['feature_selection']['return_model']['top_k']
     )
     
     df = pd.read_csv(train_path)
@@ -139,10 +139,21 @@ def run_full_pipeline(
     
     lgbm_params = config['lgbm'].copy()
     
-    # Risk Model Params (MAE for robust volatility estimation)
-    risk_lgbm_params = lgbm_params.copy()
+    # Custom Objectives & Metrics
+    from src.custom_objectives import correlation_metric
     
-    # Risk Model Features (Dynamic Selection)
+    # 1. Return Model Params
+    # Use RMSE for optimization (stable), but Correlation (IC) for Early Stopping
+    return_lgbm_params = lgbm_params.copy()
+    return_lgbm_params['metric'] = 'custom' # Will use feval
+    
+    # 2. Risk Model Params
+    # Use Quantile Regression to penalize under-estimation
+    # alpha=0.75 means we predict the 75th percentile of volatility (Safety Buffer)
+    risk_lgbm_params = lgbm_params.copy()
+    risk_lgbm_params['objective'] = 'quantile'
+    risk_lgbm_params['alpha'] = 0.75
+    risk_lgbm_params['metric'] = 'quantile'
     # FeatureSelector를 사용하여 Risk Target(abs returns)과 상관관계가 높은 Feature 선별
     from src.feature_selection import FeatureSelector
     risk_selector = FeatureSelector()
@@ -150,8 +161,9 @@ def run_full_pipeline(
     # Risk Target 생성
     y_risk_target = y.abs()
     
-    risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=1000)
-    logger.info(f"Risk Model Features (Top 1000): {risk_features[:10]} ...")
+    risk_top_k = config['features']['feature_selection']['risk_model']['top_k']
+    risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=risk_top_k)
+    logger.info(f"Risk Model Features (Top {risk_top_k}): {risk_features[:10]} ...")
     
     # Metric calculator
     metric_calculator = CompetitionMetric(
@@ -173,15 +185,25 @@ def run_full_pipeline(
         y_val_fold = y_cv.iloc[val_idx]
         
         # 1. Return Model Training
-        model_return = lgb.LGBMRegressor(**lgbm_params)
-        model_return.fit(X_train_fold, y_train_fold, eval_set=[(X_val_fold, y_val_fold)], eval_metric='rmse', callbacks=[lgb.log_evaluation(0)])
+        model_return = lgb.LGBMRegressor(**return_lgbm_params)
+        model_return.fit(
+            X_train_fold, y_train_fold,
+            eval_set=[(X_val_fold, y_val_fold)],
+            eval_metric=correlation_metric, # Use IC for Early Stopping
+            callbacks=[lgb.log_evaluation(0)]
+        )
         
         # 2. Risk Model Training (Target: abs(returns))
         y_train_risk = y_train_fold.abs()
         y_val_risk = y_val_fold.abs()
         
         model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
-        model_risk.fit(X_train_fold[risk_features], y_train_risk, eval_set=[(X_val_fold[risk_features], y_val_risk)], eval_metric='mae', callbacks=[lgb.log_evaluation(0)])
+        model_risk.fit(
+            X_train_fold[risk_features], y_train_risk,
+            eval_set=[(X_val_fold[risk_features], y_val_risk)],
+            eval_metric='quantile',
+            callbacks=[lgb.log_evaluation(0)]
+        )
         
         # OOF predictions
         pred_return = model_return.predict(X_val_fold)
@@ -214,7 +236,10 @@ def run_full_pipeline(
         models_return.append(model_return)
         models_risk.append(model_risk)
         
-        logger.info(f"  ✅ Fold {fold_idx + 1} Score: {fold_result['score']:.6f} | Return RMSE: {model_return.best_score_['valid_0']['rmse']:.6f} | Risk MAE: {model_risk.best_score_['valid_0']['l1']:.6f}")
+            # Log metrics (Handle different metric names safely)
+        ret_score = model_return.best_score_['valid_0'].get('correlation', 0.0)
+        risk_score = model_return.best_score_['valid_0'].get('quantile', 0.0)
+        logger.info(f"  ✅ Fold {fold_idx + 1} Score: {fold_result['score']:.6f} | Return IC: {ret_score:.4f} | Risk Quantile: {risk_score:.4f}")
     
     logger.info(f"\n✅ CV Training complete | OOF samples: {oof_mask.sum()}/{len(X_cv)}")
     logger.info(f"📊 Fold Scores: {', '.join([f'{s:.4f}' for s in fold_scores])}")
@@ -228,11 +253,11 @@ def run_full_pipeline(
     logger.info("=" * 80)
     
     oof_df = df_cv[oof_mask]
-    oof_pred_ret = oof_predictions[oof_mask]
+    oof_pred_return = oof_predictions[oof_mask]
     oof_pred_risk = oof_risk_predictions[oof_mask]
     
     # Allocation
-    allocations = risk_adjusted_allocation(oof_pred_ret, oof_pred_risk, k=0.5)
+    allocations = risk_adjusted_allocation(oof_pred_return, oof_pred_risk, k=0.5)
     
     results = metric_calculator.calculate_score(
         allocations=allocations,
@@ -257,7 +282,7 @@ def run_full_pipeline(
     oof_df_save = pd.DataFrame({
         'date_id': oof_df['date_id'] if 'date_id' in oof_df.columns else oof_df.index,
         'actual_return': oof_df['forward_returns'].values,
-        'pred_return': oof_pred_ret,
+        'pred_return': oof_pred_return,
         'pred_risk': oof_pred_risk,
         'allocation': allocations
     })
@@ -272,12 +297,12 @@ def run_full_pipeline(
     logger.info("=" * 80)
     
     # Return Model
-    final_model_return = lgb.LGBMRegressor(**lgbm_params)
-    final_model_return.fit(X_cv, y_cv)
+    final_model_return = lgb.LGBMRegressor(**return_lgbm_params)
+    final_model_return.fit(X_cv, y_cv, eval_metric=correlation_metric)
     
     # Risk Model
     final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
-    final_model_risk.fit(X_cv[risk_features], y_cv.abs())
+    final_model_risk.fit(X_cv[risk_features], y_cv.abs(), eval_metric='quantile')
     
     logger.info(f"✅ Final models trained on {len(X_cv)} samples")
     

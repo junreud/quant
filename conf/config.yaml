@@ -43,8 +43,12 @@ features:
   use_market_regime_features: true
   feature_selection:
     enabled: true
-    method: "importance" # or "collinear"
-    top_k: 100
+    return_model:
+      method: "importance" # or "collinear"
+      top_k: 100
+    risk_model:
+      method: "correlation"
+      top_k: 100
 
 # Risk Management
 risk:

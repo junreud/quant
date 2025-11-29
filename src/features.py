@@ -21,7 +21,13 @@ class FeatureEngineer:
         X_test = fe.transform(test_df)
     """
     
-    def __init__(self, add_interactions: bool = False, use_time_series_features: bool = True, use_advanced_features: bool = True, use_market_regime_features: bool = True):
+    def __init__(
+        self,
+        add_interactions: bool = False,
+        use_time_series_features: bool = True,
+        use_advanced_features: bool = True,
+        use_market_regime_features: bool = True,
+    ):
         """
         Parameters
         ----------
@@ -40,7 +46,6 @@ class FeatureEngineer:
         self.use_time_series_features = use_time_series_features
         self.use_advanced_features = use_advanced_features
         self.use_market_regime_features = use_market_regime_features
-        self.fill_na = True # Default to True for backward compatibility
         self.feature_cols = None
         self.generated_features = []
         

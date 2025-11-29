@@ -32,6 +32,7 @@ class Pipeline:
         use_time_series_features: bool = True,
         use_advanced_features: bool = True,
         use_market_regime_features: bool = True,
+        fill_na: bool = True,
         use_feature_selection: bool = False,
         feature_selection_method: str = 'importance',
         top_k_features: int = 50
@@ -61,7 +62,7 @@ class Pipeline:
             add_interactions=add_interactions,
             use_time_series_features=use_time_series_features,
             use_advanced_features=use_advanced_features,
-            use_market_regime_features=use_market_regime_features,
+            use_market_regime_features=use_market_regime_features
         )
         self.use_feature_selection = use_feature_selection
         self.feature_selector = FeatureSelector() if use_feature_selection else None

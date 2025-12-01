@@ -58,11 +58,12 @@ lgbm_risk2:
   colsample_bytree: 0.7
   learning_rate: 0.05
   max_depth: 5
-  metric: rmse
+  metric: quantile
   min_child_samples: 20
   n_estimators: 500
   num_leaves: 31
-  objective: regression
+  objective: quantile
+  alpha: 0.1 # 하위 10% (최악의 상황) 예측
   reg_alpha: 0.1
   reg_lambda: 0.1
   subsample: 0.8
@@ -70,8 +71,8 @@ lgbm_risk2:
   verbose: -1
 
 allocation:
-  k: 0.7
-  threshold: 0.0
+  k: 3.5
+  threshold: -0.005 # 0.0은 너무 공격적(53% 거래 중단). -0.002로 완화하여 하락 신호가 강할 때만 회피
 
 # Feature Engineering
 features:
@@ -85,13 +86,14 @@ features:
     enabled: true
     return_model:
       method: "importance" # or "collinear"
-      top_k: 500
+      top_k: 100
     risk_model:
       method: "correlation"
-      top_k: 500
+      top_k: 100
     risk2_model:
-      method: "correlation"
-      top_k: 500
+      method: "crash_divergence"
+      top_k: 200
+      crash_threshold_quantile: 0.05
 
 # Risk Management
 risk:

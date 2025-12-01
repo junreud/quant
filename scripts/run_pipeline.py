@@ -193,8 +193,8 @@ def run_full_pipeline(
     # Use default 5% quantile and top 20 features (or read from config if added)
     risk2_crash_features = feature_selector.select_by_crash_divergence(
         X, y_risk2_target, 
-        crash_threshold_quantile=0.05, 
-        top_k=50 # Select top 50 divergent features
+        crash_threshold_quantile=config['features']['feature_selection']['risk2_model']['crash_threshold_quantile'], 
+        top_k=config['features']['feature_selection']['risk2_model']['top_k'] # Select top 50 divergent features
     )
     
     # Combine and deduplicate
@@ -526,7 +526,7 @@ def run_full_pipeline(
     
     # Feature importance (Return Model)
     importance_df = pd.DataFrame({
-        'feature': feature_cols,
+        'feature': return_features,
         'importance': final_model_return_all.feature_importances_
     }).sort_values('importance', ascending=False)
     
@@ -585,6 +585,11 @@ def run_full_pipeline(
         "return_learning_rate": return_lgbm_params.get('learning_rate'),
         "risk_n_estimators": risk_lgbm_params.get('n_estimators'),
         "risk_learning_rate": risk_lgbm_params.get('learning_rate'),
+        "k": config['allocation']['k'],
+        "threshold": config['allocation']['threshold'],
+        "return_top_k": config['feature_selection']['return_top_k'],
+        "risk_top_k": config['feature_selection']['risk_top_k'],
+        "risk2_top_k": config['feature_selection']['risk2_top_k'],
     }
     
     exp_results = {

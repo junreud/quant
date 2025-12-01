@@ -33,8 +33,7 @@ class Pipeline:
         use_advanced_features: bool = True,
         use_market_regime_features: bool = True,
         fill_na: bool = True,
-        use_market_regime_features: bool = True,
-        fill_na: bool = True
+
     ):
         """
         Parameters

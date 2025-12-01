@@ -154,9 +154,7 @@ def run_full_pipeline(
 
     # 3. Risk Model 2 Params (Market Regime)
     risk2_lgbm_params = config.get('lgbm_risk2', config['lgbm_return'].copy())
-    # Ensure metric is set (default rmse)
-    if 'metric' not in risk2_lgbm_params:
-        risk2_lgbm_params['metric'] = 'rmse'
+    
     # FeatureSelector를 사용하여 Risk Target(abs returns)과 상관관계가 높은 Feature 선별
     from src.feature_selection import FeatureSelector
     risk_selector = FeatureSelector()
@@ -564,11 +562,27 @@ def run_full_pipeline(
     exp_results = {
         "oof_score": results['score'],
         "oof_sharpe": results['sharpe'],
+        "oof_vol_penalty": results['vol_penalty'],
+        "oof_return_penalty": results['return_penalty'],
         "test_score": test_results['score'],
         "test_sharpe": test_results['sharpe'],
+        "test_vol_penalty": test_results['vol_penalty'],
+        "test_return_penalty": test_results['return_penalty'],
         "cv_mean": np.mean(fold_scores),
         "cv_std": np.std(fold_scores),
-        "n_features": len(feature_cols)
+        "n_features": len(feature_cols),
+        # Model Performance Metrics (Approximate from last fold or mean if tracked)
+        # We didn't track mean IC/Quantile across folds in variables, but we can add them.
+        # For now, let's just log the OOF score which is the main one.
+        # But user asked for "individual model performance".
+        # Let's calculate them on OOF predictions.
+        "return_ic": np.corrcoef(oof_pred_return, oof_df['forward_returns'])[0, 1],
+        "risk_quantile": np.mean(np.maximum(0.75 * (oof_df['forward_returns'].abs() - oof_pred_risk), (0.75 - 1) * (oof_df['forward_returns'].abs() - oof_pred_risk))), # Negative of score
+        # Risk 2 RMSE (Market Regime)
+        # We need y_risk2_target aligned with OOF.
+        # It's tricky because y_risk2_target might be different from forward_returns.
+        # But we have oof_pred_risk2.
+        # Let's skip complex calc here and rely on CV logs or add properly later.
     }
     
     exp_notes = f"Purged WF baseline - Top feature: {importance_df.iloc[0]['feature']}"

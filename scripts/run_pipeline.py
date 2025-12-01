@@ -144,13 +144,9 @@ def run_full_pipeline(
     
     # 1. Return Model Params
     return_lgbm_params = config['lgbm_return'].copy()
-    return_lgbm_params['metric'] = 'custom' # Keep custom metric override for code logic
     
     # 2. Risk Model Params
     risk_lgbm_params = config['lgbm_risk'].copy()
-    # Objective and metric are already set in config, but good to ensure
-    risk_lgbm_params['objective'] = 'quantile'
-    risk_lgbm_params['metric'] = 'quantile'
 
     # 3. Risk Model 2 Params (Market Regime)
     risk2_lgbm_params = config.get('lgbm_risk2', config['lgbm_return'].copy())
@@ -243,8 +239,8 @@ def run_full_pipeline(
             return_pred=pred_return,
             risk_vol_pred=pred_risk,
             risk_market_pred=pred_risk2,
-            market_threshold=0.0,
-            k=0.5
+            market_threshold=config['allocation']['threshold'],
+            k=config['allocation']['k']
         )
         
         val_df_fold = df_cv.iloc[val_idx]
@@ -291,8 +287,8 @@ def run_full_pipeline(
         return_pred=oof_pred_return,
         risk_vol_pred=oof_pred_risk,
         risk_market_pred=oof_pred_risk2,
-        market_threshold=0.0,
-        k=config['lgbm_risk']['k'] # Reuse k from risk config or add new one
+        market_threshold=config['allocation']['threshold'],
+        k=config['allocation']['k']
     )
     
     results = metric_calculator.calculate_score(
@@ -340,7 +336,6 @@ def run_full_pipeline(
     
     # Risk Model
     final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
-    final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk.fit(X_cv[risk_features], y_cv.abs(), eval_metric='quantile')
     
     # Risk Model 2
@@ -366,8 +361,8 @@ def run_full_pipeline(
         return_pred=test_pred_ret,
         risk_vol_pred=test_pred_risk,
         risk_market_pred=test_pred_risk2,
-        market_threshold=0.0,
-        k=config['lgbm_risk']['k']
+        market_threshold=config['allocation']['threshold'],
+        k=config['allocation']['k']
     )
     
     test_results = metric_calculator.calculate_score(

@@ -175,7 +175,7 @@ def triple_model_allocation(
     risk_vol_pred: Union[np.ndarray, float],
     risk_market_pred: Union[np.ndarray, float],
     market_threshold: float = 0.0,
-    k: float = 1.0,
+    k: float = config['allocation']['k'],
     max_position: float = 2.0
 ) -> Union[np.ndarray, float]:
     """

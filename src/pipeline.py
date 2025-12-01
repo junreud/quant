@@ -33,9 +33,8 @@ class Pipeline:
         use_advanced_features: bool = True,
         use_market_regime_features: bool = True,
         fill_na: bool = True,
-        use_feature_selection: bool = False,
-        feature_selection_method: str = 'importance',
-        top_k_features: int = 50
+        use_market_regime_features: bool = True,
+        fill_na: bool = True
     ):
         """
         Parameters
@@ -64,11 +63,7 @@ class Pipeline:
             use_advanced_features=use_advanced_features,
             use_market_regime_features=use_market_regime_features
         )
-        self.use_feature_selection = use_feature_selection
-        self.feature_selector = FeatureSelector() if use_feature_selection else None
-        self.feature_selection_method = feature_selection_method
-        self.top_k_features = top_k_features
-        self.selected_features = None
+        self.feature_selector = FeatureSelector()
         
     def fit(self, df: pd.DataFrame) -> 'Pipeline':
         """파이프라인 학습"""
@@ -88,23 +83,7 @@ class Pipeline:
         self.feature_engineer.fit(X_pre)
         
         # 4. 피처 선택 (옵션)
-        if self.use_feature_selection:
-            # FE 적용하여 모든 후보 피처 생성
-            X_fe = self.feature_engineer.transform(X_pre)
-            
-            if self.feature_selection_method == 'collinear':
-                self.selected_features = self.feature_selector.remove_collinear(X_fe)
-            elif self.feature_selection_method == 'importance':
-                if 'forward_returns' not in df.columns:
-                    print("⚠️ Warning: Target not found for feature selection. Skipping.")
-                    self.selected_features = X_fe.columns.tolist()
-                else:
-                    y = df['forward_returns']
-                    # NaN 제거 (타겟 기준)
-                    valid_mask = ~y.isnull()
-                    self.selected_features = self.feature_selector.select_by_importance(
-                        X_fe[valid_mask], y[valid_mask], top_k=self.top_k_features
-                    )
+        return self
         
         return self
     
@@ -126,11 +105,6 @@ class Pipeline:
         X = self.feature_engineer.transform(X)
         
         # 3. 피처 선택
-        if self.use_feature_selection and self.selected_features:
-            # 선택된 피처만 유지 (존재하는 것만)
-            cols_to_use = [c for c in self.selected_features if c in X.columns]
-            X = X[cols_to_use]
-        
         if return_target:
             return X, y
         return X
@@ -142,8 +116,6 @@ class Pipeline:
     
     def get_feature_names(self):
         """피처 이름 반환"""
-        if self.use_feature_selection and self.selected_features:
-            return self.selected_features
         return self.feature_engineer.get_feature_names()
 
 

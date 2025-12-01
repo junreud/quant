@@ -138,3 +138,58 @@ class FeatureSelector:
         
         logger.info(f"   Selected {len(selected)} features.")
         return selected
+    def select_by_crash_divergence(self, X: pd.DataFrame, y: pd.Series, 
+                                 crash_threshold_quantile: float = 0.05, 
+                                 top_k: int = 20) -> List[str]:
+        """
+        시장 폭락(Crash) 시점과 평상시의 Feature 분포 차이(Divergence)가 큰 Feature 선택.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame
+            피처 데이터
+        y : pd.Series
+            타겟 데이터 (Market Returns)
+        crash_threshold_quantile : float
+            Crash로 정의할 하위 분위수 (예: 0.05 = 하위 5%)
+        top_k : int
+            선택할 상위 피처 개수
+            
+        Returns
+        -------
+        List[str]
+            선택된 피처 리스트
+        """
+        logger.info(f"🔍 Selecting top {top_k} features by Crash Divergence (q={crash_threshold_quantile})...")
+        
+        # Align indices
+        common_idx = X.index.intersection(y.index)
+        X_aligned = X.loc[common_idx]
+        y_aligned = y.loc[common_idx]
+        
+        # Define Crash Mask
+        crash_threshold = y_aligned.quantile(crash_threshold_quantile)
+        crash_mask = y_aligned < crash_threshold
+        
+        n_crash = crash_mask.sum()
+        logger.info(f"   Identified {n_crash} crash periods (Threshold: {crash_threshold:.4f})")
+        
+        if n_crash < 10:
+            logger.warning("   Too few crash periods for reliable analysis. Returning empty list.")
+            return []
+            
+        # Calculate Means
+        crash_means = X_aligned[crash_mask].mean()
+        normal_means = X_aligned[~crash_mask].mean()
+        
+        # Calculate Divergence (Z-score like difference)
+        # (Crash Mean - Normal Mean) / Overall Std
+        # Avoid division by zero
+        overall_std = X_aligned.std() + 1e-8
+        divergence = (crash_means - normal_means) / overall_std
+        
+        # Select top k by absolute divergence
+        selected = divergence.abs().sort_values(ascending=False).head(top_k).index.tolist()
+        
+        logger.info(f"   Selected {len(selected)} features.")
+        return selected

@@ -77,10 +77,8 @@ def run_full_pipeline(
         use_time_series_features=config['features']['use_time_series_features'],
         use_advanced_features=config['features']['use_advanced_features'],
         use_market_regime_features=config['features'].get('use_market_regime_features'),
-        # Feature Selection
-        use_feature_selection=config['features']['feature_selection']['enabled'],
-        feature_selection_method=config['features']['feature_selection']['return_model']['method'],
-        top_k_features=config['features']['feature_selection']['return_model']['top_k']
+        # Feature Selection (Explicitly handled later)
+        # use_feature_selection=False 
     )
     
     df = pd.read_csv(train_path)
@@ -153,7 +151,21 @@ def run_full_pipeline(
     
     # FeatureSelector를 사용하여 Risk Target(abs returns)과 상관관계가 높은 Feature 선별
     from src.feature_selection import FeatureSelector
-    risk_selector = FeatureSelector()
+    feature_selector = FeatureSelector()
+    
+    # 1. Return Model Feature Selection (Importance)
+    # We need to select features for Return Model explicitly now
+    return_top_k = config['features']['feature_selection']['return_model']['top_k']
+    logger.info(f"Selecting Top {return_top_k} features for Return Model...")
+    
+    return_features = feature_selector.select_by_importance(
+        X, y, top_k=return_top_k,
+        lgbm_params={'objective': 'regression', 'metric': 'rmse', 'verbosity': -1, 'seed': 42}
+    )
+    logger.info(f"Return Model Features: {len(return_features)}")
+
+    # 2. Risk Model Feature Selection (Correlation)
+    # Risk Target 생성
     
     # Risk Target 생성
     y_risk_target = y.abs()
@@ -168,8 +180,27 @@ def run_full_pipeline(
         y_risk2_target = y
     
     risk_top_k = config['features']['feature_selection']['risk_model']['top_k']
-    risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=risk_top_k)
+    risk_features = feature_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=risk_top_k)
     logger.info(f"Risk Model Features (Top {risk_top_k}): {risk_features[:10]} ...")
+    
+    # Risk 2 Feature Selection (Correlation + Crash Divergence)
+    risk2_top_k = config['features']['feature_selection']['risk2_model']['top_k']
+    
+    # 1. Correlation
+    risk2_corr_features = feature_selector.select_by_correlation(X, y_risk2_target, method='spearman', top_k=risk2_top_k)
+    
+    # 2. Crash Divergence (Auto-detect crash features)
+    # Use default 5% quantile and top 20 features (or read from config if added)
+    risk2_crash_features = feature_selector.select_by_crash_divergence(
+        X, y_risk2_target, 
+        crash_threshold_quantile=0.05, 
+        top_k=50 # Select top 50 divergent features
+    )
+    
+    # Combine and deduplicate
+    risk2_features = list(set(risk2_corr_features + risk2_crash_features))
+    logger.info(f"Risk Model 2 Features: {len(risk2_features)} (Corr: {len(risk2_corr_features)}, Crash: {len(risk2_crash_features)})")
+    logger.info(f"Top Crash Features: {risk2_crash_features[:10]}")
     
     # Metric calculator
     metric_calculator = CompetitionMetric(
@@ -193,8 +224,8 @@ def run_full_pipeline(
         # 1. Return Model Training
         model_return = lgb.LGBMRegressor(**return_lgbm_params)
         model_return.fit(
-            X_train_fold, y_train_fold,
-            eval_set=[(X_val_fold, y_val_fold)],
+            X_train_fold[return_features], y_train_fold,
+            eval_set=[(X_val_fold[return_features], y_val_fold)],
             eval_metric=correlation_metric, # Use IC for Early Stopping
             callbacks=[lgb.log_evaluation(0)]
         )
@@ -217,16 +248,16 @@ def run_full_pipeline(
         
         model_risk2 = lgb.LGBMRegressor(**risk2_lgbm_params)
         model_risk2.fit(
-            X_train_fold, y_train_risk2,
-            eval_set=[(X_val_fold, y_val_risk2)],
+            X_train_fold[risk2_features], y_train_risk2,
+            eval_set=[(X_val_fold[risk2_features], y_val_risk2)],
             eval_metric=risk2_lgbm_params['metric'],
             callbacks=[lgb.log_evaluation(0)]
         )
         
         # OOF predictions
-        pred_return = model_return.predict(X_val_fold)
+        pred_return = model_return.predict(X_val_fold[return_features])
         pred_risk = model_risk.predict(X_val_fold[risk_features])
-        pred_risk2 = model_risk2.predict(X_val_fold)
+        pred_risk2 = model_risk2.predict(X_val_fold[risk2_features])
         
         oof_predictions[val_idx] = pred_return
         oof_risk_predictions[val_idx] = pred_risk
@@ -332,7 +363,7 @@ def run_full_pipeline(
     
     # Return Model
     final_model_return = lgb.LGBMRegressor(**return_lgbm_params)
-    final_model_return.fit(X_cv, y_cv, eval_metric=correlation_metric)
+    final_model_return.fit(X_cv[return_features], y_cv, eval_metric=correlation_metric)
     
     # Risk Model
     final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
@@ -340,7 +371,7 @@ def run_full_pipeline(
     
     # Risk Model 2
     final_model_risk2 = lgb.LGBMRegressor(**risk2_lgbm_params)
-    final_model_risk2.fit(X_cv, y_risk2_target.iloc[:len(X_cv)], eval_metric=risk2_lgbm_params['metric'])
+    final_model_risk2.fit(X_cv[risk2_features], y_risk2_target.iloc[:len(X_cv)], eval_metric=risk2_lgbm_params['metric'])
     
     logger.info(f"✅ Final models trained on {len(X_cv)} samples")
     
@@ -351,10 +382,10 @@ def run_full_pipeline(
     logger.info("🧪 Step 5: Final Test Evaluation (Last 180 days)")
     logger.info("=" * 80)
     
-    test_pred_ret = final_model_return.predict(X_test)
-    test_pred_ret = final_model_return.predict(X_test)
+    test_pred_ret = final_model_return.predict(X_test[return_features])
+    test_pred_ret = final_model_return.predict(X_test[return_features])
     test_pred_risk = final_model_risk.predict(X_test[risk_features])
-    test_pred_risk2 = final_model_risk2.predict(X_test)
+    test_pred_risk2 = final_model_risk2.predict(X_test[risk2_features])
     
     # Triple Allocation for Test
     test_allocations = triple_model_allocation(
@@ -404,14 +435,14 @@ def run_full_pipeline(
     logger.info(f"\n🔄 Retraining on ALL data for submission...")
     
     final_model_return_all = lgb.LGBMRegressor(**return_lgbm_params)
-    final_model_return_all.fit(X, y)
+    final_model_return_all.fit(X[return_features], y)
     
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk_all.fit(X[risk_features], y.abs())
     
     final_model_risk2_all = lgb.LGBMRegressor(**risk2_lgbm_params)
-    final_model_risk2_all.fit(X, y_risk2_target)
+    final_model_risk2_all.fit(X[risk2_features], y_risk2_target)
     
     logger.info(f"✅ Final models retrained on {len(X)} samples")
     
@@ -465,7 +496,7 @@ def run_full_pipeline(
     X_history = pipeline.transform(history_df, return_target=False)
     
     # Predict with FINAL models
-    pred_history_return = final_model_return_all.predict(X_history)
+    pred_history_return = final_model_return_all.predict(X_history[return_features])
     
     pred_history_path = model_dir / 'pred_history.pkl'
     with open(pred_history_path, 'wb') as f:
@@ -481,8 +512,10 @@ def run_full_pipeline(
             'model_return': final_model_return_all,
             'model_risk': final_model_risk_all,
             'model_risk2': final_model_risk2_all,
-            'feature_cols': feature_cols,
+            'feature_cols': feature_cols, # All generated features
+            'return_features': return_features,
             'risk_features': risk_features,
+            'risk2_features': risk2_features,
             'config': config,
             'oof_score': results['score'],
             'test_score': test_results['score'],

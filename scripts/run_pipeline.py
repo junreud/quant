@@ -58,6 +58,16 @@ def run_full_pipeline(
     logger.info("🚀 FULL PIPELINE EXECUTION (Purged Walk-Forward)")
     logger.info("=" * 80)
     
+    # Experiment Name Generation (Early)
+    from datetime import datetime
+    exp_name = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    logger.info(f"🆔 Experiment Name: {exp_name}")
+    
+    # Create Experiment Directory Early
+    tracker = ExperimentTracker(tracking_dir=str(project_root / "experiments"))
+    # We will log the full experiment at the end, but we can create the dir now if needed
+    # Or just use the name for files in results/
+    
     # ========================================
     # Step 1: 데이터 로드 및 전처리
     # ========================================
@@ -167,8 +177,9 @@ def run_full_pipeline(
     # 2. Risk Model Feature Selection (Correlation)
     # Risk Target 생성
     
-    # Risk Target 생성
-    y_risk_target = y.abs()
+    # Risk Target 생성 (Downside Risk)
+    # y_risk_target = y.abs() # Old: Volatility
+    y_risk_target = (-y).clip(lower=0) # New: Downside Risk (ReLU(-return))
     
     # Risk 2 Target (Market Regime)
     # Use market_forward_excess_returns if available, else use forward_returns
@@ -230,9 +241,9 @@ def run_full_pipeline(
             callbacks=[lgb.log_evaluation(0)]
         )
         
-        # 2. Risk Model Training (Target: abs(returns))
-        y_train_risk = y_train_fold.abs()
-        y_val_risk = y_val_fold.abs()
+        # 2. Risk Model Training (Target: Downside Risk)
+        y_train_risk = (-y_train_fold).clip(lower=0)
+        y_val_risk = (-y_val_fold).clip(lower=0)
         
         model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
         model_risk.fit(
@@ -341,7 +352,12 @@ def run_full_pipeline(
     logger.info(f"{'='*80}")
     
     # Save OOF predictions for analysis
-    oof_save_path = project_root / config['output']['submission_dir'] / 'oof_predictions.csv'
+    # Save with Experiment ID
+    oof_filename = f'oof_predictions_{exp_name}.csv'
+    oof_save_path = project_root / config['output']['submission_dir'] / oof_filename
+    
+    # Also save as 'latest' for backward compatibility
+    oof_latest_path = project_root / config['output']['submission_dir'] / 'oof_predictions.csv'
     oof_df_save = pd.DataFrame({
         'date_id': oof_df['date_id'] if 'date_id' in oof_df.columns else oof_df.index,
         'actual_return': oof_df['forward_returns'].values,
@@ -352,6 +368,7 @@ def run_full_pipeline(
         'allocation': allocations
     })
     oof_df_save.to_csv(oof_save_path, index=False)
+    oof_df_save.to_csv(oof_latest_path, index=False)
     logger.info(f"💾 OOF predictions saved to: {oof_save_path}")
     
     # ========================================
@@ -367,7 +384,7 @@ def run_full_pipeline(
     
     # Risk Model
     final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
-    final_model_risk.fit(X_cv[risk_features], y_cv.abs(), eval_metric='quantile')
+    final_model_risk.fit(X_cv[risk_features], (-y_cv).clip(lower=0), eval_metric='quantile')
     
     # Risk Model 2
     final_model_risk2 = lgb.LGBMRegressor(**risk2_lgbm_params)
@@ -404,7 +421,9 @@ def run_full_pipeline(
     )
     
     # Save Test predictions for analysis
-    test_save_path = project_root / config['output']['submission_dir'] / 'test_predictions.csv'
+    test_filename = f'test_predictions_{exp_name}.csv'
+    test_save_path = project_root / config['output']['submission_dir'] / test_filename
+    test_latest_path = project_root / config['output']['submission_dir'] / 'test_predictions.csv'
     test_df_save = pd.DataFrame({
         'date_id': df_test['date_id'] if 'date_id' in df_test.columns else df_test.index,
         'actual_return': df_test['forward_returns'].values,
@@ -415,6 +434,7 @@ def run_full_pipeline(
         'allocation': test_allocations,
     })
     test_df_save.to_csv(test_save_path, index=False)
+    test_df_save.to_csv(test_latest_path, index=False)
     logger.info(f"💾 Test predictions saved to: {test_save_path}")
     
     logger.info(f"\n{'='*80}")
@@ -439,7 +459,7 @@ def run_full_pipeline(
     
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
-    final_model_risk_all.fit(X[risk_features], y.abs())
+    final_model_risk_all.fit(X[risk_features], (-y).clip(lower=0))
     
     final_model_risk2_all = lgb.LGBMRegressor(**risk2_lgbm_params)
     final_model_risk2_all.fit(X[risk2_features], y_risk2_target)
@@ -456,73 +476,24 @@ def run_full_pipeline(
     model_dir = project_root / config['output']['model_dir']
     model_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save Model
-    model_save_path = model_dir / 'dual_model.pkl'
+    # Save Model (Consolidated)
+    model_save_path = model_dir / 'triple_model.pkl'
     with open(model_save_path, 'wb') as f:
         pickle.dump({
             'model_return': final_model_return_all,
             'model_risk': final_model_risk_all,
             'model_risk2': final_model_risk2_all,
             'pipeline': pipeline,
-            'feature_cols': pipeline.feature_engineer.feature_cols,
-            'config': config
-        }, f)
-        
-    logger.info(f"✅ Model saved: {model_save_path}")
-    
-    # Save History for Inference (Last 200 rows)
-    # This is needed to calculate rolling features for the first few test samples
-    history_save_path = model_dir / 'history.pkl'
-    # Save only necessary columns for feature engineering
-    # We need raw columns, so we take them from the original df (before transform)
-    # But wait, 'df' variable in main() is already loaded.
-    # We need to ensure we have the raw data. 
-    # In run_full_pipeline, 'df' is the raw dataframe loaded from train.csv.
-    # We should use that.
-    history_df = df.tail(200).reset_index(drop=True)
-    history_df.to_pickle(history_save_path)
-    logger.info(f"✅ History buffer saved: {history_save_path} (200 samples)")
-    
-    # Save Prediction History for Dynamic Allocation
-    # We use the OOF predictions (or we could predict on the history_df)
-    # Since history_df is the last 200 rows of TRAIN, we should use predictions on THEM.
-    # But we don't have predictions on history_df readily available unless they are in OOF.
-    # If history_df is part of the last fold's validation, it's in OOF.
-    # If we retrained on ALL data, we should ideally predict on history_df with the FINAL model.
-    # Let's do that to be consistent with the model we ship.
-    
-    logger.info("🔮 Generating prediction history for inference buffer...")
-    # Preprocess history_df
-    X_history = pipeline.transform(history_df, return_target=False)
-    
-    # Predict with FINAL models
-    pred_history_return = final_model_return_all.predict(X_history[return_features])
-    
-    pred_history_path = model_dir / 'pred_history.pkl'
-    with open(pred_history_path, 'wb') as f:
-        pickle.dump(list(pred_history_return), f)
-        
-    logger.info(f"✅ Prediction history saved: {pred_history_path} ({len(pred_history_return)} samples)")
-    
-    ensure_dir(model_dir)
-    
-    model_path = model_dir / "dual_model.pkl"
-    with open(model_path, 'wb') as f:
-        pickle.dump({
-            'model_return': final_model_return_all,
-            'model_risk': final_model_risk_all,
-            'model_risk2': final_model_risk2_all,
             'feature_cols': feature_cols, # All generated features
             'return_features': return_features,
             'risk_features': risk_features,
             'risk2_features': risk2_features,
             'config': config,
             'oof_score': results['score'],
-            'test_score': test_results['score'],
-            'pipeline': pipeline
+            'test_score': test_results['score']
         }, f)
-    
-    logger.info(f"✅ Model saved: {model_path}")
+        
+    logger.info(f"✅ Model saved: {model_save_path}")
     
     # Feature importance (Return Model)
     importance_df = pd.DataFrame({
@@ -569,11 +540,11 @@ def run_full_pipeline(
     logger.info("=" * 80)
     
     # 실험 추적
-    tracker = ExperimentTracker(tracking_dir=str(project_root / "experiments"))
+    # tracker is already initialized
     
-    # 실험 이름 생성
-    from datetime import datetime
-    exp_name = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # 실험 이름 생성 (Already done)
+    # from datetime import datetime
+    # exp_name = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     # 실험 정보 저장
     exp_config = {
@@ -587,9 +558,9 @@ def run_full_pipeline(
         "risk_learning_rate": risk_lgbm_params.get('learning_rate'),
         "k": config['allocation']['k'],
         "threshold": config['allocation']['threshold'],
-        "return_top_k": config['feature_selection']['return_top_k'],
-        "risk_top_k": config['feature_selection']['risk_top_k'],
-        "risk2_top_k": config['feature_selection']['risk2_top_k'],
+        "return_top_k": config['features']['feature_selection']['return_model']['top_k'],
+        "risk_top_k": config['features']['feature_selection']['risk_model']['top_k'],
+        "risk2_top_k": config['features']['feature_selection']['risk2_model']['top_k'],
     }
     
     exp_results = {
@@ -610,7 +581,7 @@ def run_full_pipeline(
         # But user asked for "individual model performance".
         # Let's calculate them on OOF predictions.
         "return_ic": np.corrcoef(oof_pred_return, oof_df['forward_returns'])[0, 1],
-        "risk_quantile": np.mean(np.maximum(0.75 * (oof_df['forward_returns'].abs() - oof_pred_risk), (0.75 - 1) * (oof_df['forward_returns'].abs() - oof_pred_risk))), # Negative of score
+        "risk_quantile": np.mean(np.maximum(0.75 * ((-oof_df['forward_returns']).clip(lower=0) - oof_pred_risk), (0.75 - 1) * ((-oof_df['forward_returns']).clip(lower=0) - oof_pred_risk))), # Negative of score
         # Risk 2 RMSE (Market Regime)
         # We need y_risk2_target aligned with OOF.
         # It's tricky because y_risk2_target might be different from forward_returns.
@@ -630,6 +601,15 @@ def run_full_pipeline(
     logger.info(f"\n💾 Experiment logged: {exp_name}")
     logger.info(f"   Directory: {exp_dir}")
     
+    # Save config files for reproducibility
+    import shutil
+    for filename in ['config.yaml', 'best_params.yaml']:
+        src_path = project_root / 'conf' / filename
+        if src_path.exists():
+            dst_path = Path(exp_dir) / filename
+            shutil.copy(src_path, dst_path)
+            logger.info(f"   Saved {filename} to experiment dir")
+    
     logger.info(f"\n📊 Summary:")
     logger.info(f"  • Experiment: {exp_name}")
     logger.info(f"  • CV Strategy: {cv_strategy}")
@@ -638,7 +618,7 @@ def run_full_pipeline(
     logger.info(f"  • Test Score: {test_results['score']:.6f} (Last 180 days)")
     logger.info(f"  • Fold Scores: {', '.join([f'{s:.4f}' for s in fold_scores])}")
     logger.info(f"  • CV Mean ± Std: {np.mean(fold_scores):.6f} ± {np.std(fold_scores):.6f}")
-    logger.info(f"  • Model: {model_path}")
+    logger.info(f"  • Model: {model_dir}")
     logger.info(f"  • Features: {len(feature_cols)}")
     logger.info(f"\n📌 Next Steps:")
     logger.info(f"  1. Review Test score: {test_results['score']:.6f}")

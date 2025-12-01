@@ -71,8 +71,8 @@ lgbm_risk2:
   verbose: -1
 
 allocation:
-  k: 3.5
-  threshold: -0.005 # 0.0은 너무 공격적(53% 거래 중단). -0.002로 완화하여 하락 신호가 강할 때만 회피
+  k: 3.7 # 더 공격적으로 투자할것이다.
+  threshold: -0.015 # Quantile 0.1 예측값 기준이므로 더 낮춰야 함 (약 -2% 하락 예측 시 회피)
 
 # Feature Engineering
 features:
@@ -92,8 +92,8 @@ features:
       top_k: 100
     risk2_model:
       method: "crash_divergence"
-      top_k: 200
-      crash_threshold_quantile: 0.05
+      top_k: 100
+      crash_threshold_quantile: 0.05 # 전체 기간 중 수익률이 가장 낮은 하위 5%인 날들을 "폭락(Crash)"으로 정의
 
 # Risk Management
 risk:

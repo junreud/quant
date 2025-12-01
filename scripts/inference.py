@@ -57,20 +57,19 @@ except ImportError as e:
 MODEL = None
 PIPELINE = None
 FEATURE_COLS = None
+RETURN_FEATURES = None
+RISK_FEATURES = None
+RISK2_FEATURES = None
 HISTORY_BUFFER = None
 PRED_BUFFER = None
+CONFIG = None
 
 
-def load_model(model_path: str = "dual_model.pkl"):
+def load_model(model_path: str = "triple_model.pkl"):
     """
     Load model and pipeline (called once at startup).
-    
-    Parameters
-    ----------
-    model_path : str
-        Path to model pickle file
     """
-    global MODEL, PIPELINE, FEATURE_COLS
+    global MODEL, PIPELINE, FEATURE_COLS, RETURN_FEATURES, RISK_FEATURES, RISK2_FEATURES, CONFIG
     print("DEBUG: load_model called")
     
     if MODEL is not None:
@@ -83,10 +82,10 @@ def load_model(model_path: str = "dual_model.pkl"):
     # List of paths to check
     paths_to_check = [
         model_path, # As provided
-        os.path.join(script_dir, "..", "models", "dual_model.pkl"), # Local dev
-        os.path.join(script_dir, "dual_model.pkl"), # Same dir
-        "/kaggle/input/quant-model-v1/models/dual_model.pkl", # Kaggle
-        "/kaggle/input/quant-model-v1/dual_model.pkl",
+        os.path.join(script_dir, "..", "models", "triple_model.pkl"), # Local dev
+        os.path.join(script_dir, "triple_model.pkl"), # Same dir
+        "/kaggle/input/quant-model-v1/models/triple_model.pkl", # Kaggle
+        "/kaggle/input/quant-model-v1/triple_model.pkl",
     ]
     
     found_path = None
@@ -106,29 +105,25 @@ def load_model(model_path: str = "dual_model.pkl"):
     with open(model_path, 'rb') as f:
         model_data = pickle.load(f)
     
-    MODEL = model_data # Dictionary containing 'model_return' and 'model_risk'
-    print(f"   Model type: {type(MODEL)}")
-    if isinstance(MODEL, dict):
-        print(f"   Model keys: {list(MODEL.keys())}")
-    else:
-        print(f"   Model content: {MODEL}")
+    MODEL = model_data # Dictionary containing models
+    PIPELINE = model_data['pipeline']
+    FEATURE_COLS = model_data['feature_cols'] # All generated features
     
-    # Check if we loaded the wrapper dict or just the model dict
-    if 'model_return' not in MODEL and 'model' in MODEL:
-         # Maybe it's nested?
-         print("   ⚠️ 'model_return' not found, checking 'model' key...")
-         if isinstance(MODEL['model'], dict):
-             print(f"   Inner keys: {list(MODEL['model'].keys())}")
-             MODEL = MODEL['model'] # Unwrap if needed
+    # Load selected features for each model
+    RETURN_FEATURES = model_data.get('return_features', FEATURE_COLS)
+    RISK_FEATURES = model_data.get('risk_features', FEATURE_COLS)
+    RISK2_FEATURES = model_data.get('risk2_features', FEATURE_COLS)
+    CONFIG = model_data.get('config', {})
     
-    PIPELINE = model_data['pipeline']  # 저장된 파이프라인 사용
-    FEATURE_COLS = model_data['feature_cols']
-    
-    print(f"✅ Model loaded: {len(FEATURE_COLS)} features")
+    print(f"✅ Model loaded")
+    print(f"   Return Features: {len(RETURN_FEATURES)}")
+    print(f"   Risk Features: {len(RISK_FEATURES)}")
+    print(f"   Risk2 Features: {len(RISK2_FEATURES)}")
     print(f"✅ Pipeline loaded: {type(PIPELINE).__name__}")
 
     # Load History Buffer
     history_path = os.path.join(os.path.dirname(model_path), 'history.pkl')
+    global HISTORY_BUFFER
     if os.path.exists(history_path):
         HISTORY_BUFFER = pd.read_pickle(history_path)
         print(f"✅ History buffer loaded: {len(HISTORY_BUFFER)} samples")
@@ -148,11 +143,9 @@ def load_model(model_path: str = "dual_model.pkl"):
         PRED_BUFFER = []
 
 
-def predict(test, model_path: str = "dual_model.pkl"):
+def predict(test, model_path: str = "triple_model.pkl"):
     """
     Predict allocation for test data.
-    
-    Uses a HISTORY_BUFFER to maintain past data for rolling feature calculation.
     """
     # Load model if not loaded
     load_model(model_path)
@@ -171,11 +164,12 @@ def predict(test, model_path: str = "dual_model.pkl"):
     if HISTORY_BUFFER is None or HISTORY_BUFFER.empty:
         HISTORY_BUFFER = test_pd
     else:
-        # Ensure columns match (handling potential missing columns in test)
-        # For simplicity, we assume test has same raw columns as history
         HISTORY_BUFFER = pd.concat([HISTORY_BUFFER, test_pd], axis=0)
         
-    # Keep max size (e.g., 200) to prevent memory issues
+    # Reset index to avoid duplicates (Critical for pipeline transform)
+    HISTORY_BUFFER = HISTORY_BUFFER.reset_index(drop=True)
+        
+    # Keep max size (e.g., 200)
     if len(HISTORY_BUFFER) > 200:
         HISTORY_BUFFER = HISTORY_BUFFER.iloc[-200:]
     
@@ -184,7 +178,6 @@ def predict(test, model_path: str = "dual_model.pkl"):
     # ========================================
     try:
         # Transform the WHOLE buffer
-        # This calculates rolling features correctly using past data
         X_buffer = PIPELINE.transform(HISTORY_BUFFER, return_target=False)
         
         # Take the LAST row (current test sample)
@@ -194,77 +187,51 @@ def predict(test, model_path: str = "dual_model.pkl"):
         print(f"⚠️ Pipeline transform failed: {e}")
         print(f"   Fallback to manual preprocessing...")
         
-        # Fallback: Use raw features if possible (ignoring rolling)
-        # Construct dictionary first to ensure correct DataFrame shape
+        # Fallback: Use raw features if possible
         x_test_dict = {}
         for col in FEATURE_COLS:
             if col in test_pd.columns:
-                # Take the last value
                 val = test_pd[col].iloc[-1]
                 x_test_dict[col] = val
             else:
                 x_test_dict[col] = 0.0
         
-        # Create 1-row DataFrame
         X_test = pd.DataFrame([x_test_dict])
-        
-        # Fill NaN with 0
         X_test = X_test.fillna(0)
     
     # ========================================
-    # 모델 추론 (Dual Model)
+    # 모델 추론 (Triple Model)
     # ========================================
-    # 1. Return Prediction
-    if isinstance(MODEL, dict):
-        # Debug print removed for production
-        pass
-    
     if MODEL is None:
         raise ValueError("MODEL is None in predict()")
         
-    pred_return = MODEL['model_return'].predict(X_test)[0]
+    # 1. Return Prediction
+    # Use specific features
+    pred_return = MODEL['model_return'].predict(X_test[RETURN_FEATURES])[0]
     
     # 2. Risk Prediction
-    pred_risk = MODEL['model_risk'].predict(X_test)[0]
+    pred_risk = MODEL['model_risk'].predict(X_test[RISK_FEATURES])[0]
+    
+    # 3. Risk Model 2 Prediction (Market Regime)
+    pred_risk2 = MODEL['model_risk2'].predict(X_test[RISK2_FEATURES])[0]
     
     # ========================================
-    # Dynamic Allocation (Relative Strength)
+    # Triple Model Allocation
     # ========================================
-    global PRED_BUFFER
+    from src.allocation import triple_model_allocation
     
-    # Update Prediction Buffer
-    if PRED_BUFFER is None:
-        PRED_BUFFER = []
-        
-    PRED_BUFFER.append(pred_return)
+    # Use config values if available, else defaults
+    k = CONFIG['allocation']['k'] if CONFIG else 3.5
+    threshold = CONFIG['allocation']['threshold'] if CONFIG else -0.012
     
-    # Keep max size (e.g., 200)
-    if len(PRED_BUFFER) > 200:
-        PRED_BUFFER.pop(0)
-        
-    # Calculate Rolling Stats
-    if len(PRED_BUFFER) < 2:
-        roll_mean = pred_return # Not enough data
-        roll_std = 1.0
-    else:
-        # Use last N (e.g., 20)
-        window = 20
-        recent_preds = PRED_BUFFER[-window:]
-        roll_mean = np.mean(recent_preds)
-        roll_std = np.std(recent_preds)
-        
-    # Dynamic Allocation Logic (Using src.allocation)
-    # This ensures consistency with the optimized strategy
-    allocation = dynamic_risk_allocation(
+    allocation = triple_model_allocation(
         return_pred=pred_return,
-        risk_pred=pred_risk,
-        rolling_mean=roll_mean,
-        rolling_std=roll_std,
-        k=0.7,  # Optimized parameter
-        max_position=2.0
+        risk_vol_pred=pred_risk,
+        risk_market_pred=pred_risk2,
+        market_threshold=threshold,
+        k=k
     )
     
-    # Ensure float
     return float(allocation)
 
 

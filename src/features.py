@@ -131,7 +131,7 @@ class FeatureEngineer:
         """
         if 'forward_returns' not in df.columns:
             raise ValueError("Target column 'forward_returns' not found!")
-        return df['forward_returns'].abs()
+        return df['forward_returns'].apply(lambda x: max(0, -x))
 
     def _add_time_series_features(self, X: pd.DataFrame, date_id: pd.Series) -> pd.DataFrame:
         """
@@ -238,6 +238,22 @@ class FeatureEngineer:
             new_features.append(bb_width.rename(f"{col}_bb_width"))
             new_features.append(bb_pos.rename(f"{col}_bb_pos"))
 
+            # 4. Trend Strength (ADX, Efficiency Ratio)
+            # ADX (14) - Requires High, Low, Close. If not available, skip or approximate.
+            # Assuming we only have 'Close' (the column itself), we can't calculate true ADX.
+            # We will use Efficiency Ratio instead which only needs Close.
+            
+            # Efficiency Ratio (10, 20)
+            for window in [10, 20]:
+                er = self._calculate_efficiency_ratio(X[col], window=window)
+                new_features.append(er.rename(f"{col}_er_{window}"))
+
+            # 5. Asymmetric Volatility (Semi-Variance)
+            # Upside vs Downside Volatility (20d)
+            semi_var_up, semi_var_down = self._calculate_semi_variance(X[col], window=20)
+            new_features.append(semi_var_up.rename(f"{col}_semi_var_up_20"))
+            new_features.append(semi_var_down.rename(f"{col}_semi_var_down_20"))
+
         # 한 번에 병합
         if new_features:
             X = pd.concat([X] + new_features, axis=1)
@@ -271,9 +287,14 @@ class FeatureEngineer:
             return X
 
         # 1. Volatility Regime
-        # 20일, 60일 변동성
+        # 20일, 60일, 120일 변동성
         vol_20d = market_returns.rolling(window=20).std()
         vol_60d = market_returns.rolling(window=60).std()
+        vol_120d = market_returns.rolling(window=120).std()
+        
+        market_df['market_vol_20d'] = vol_20d
+        market_df['market_vol_60d'] = vol_60d
+        market_df['market_vol_120d'] = vol_120d
         
         market_df['market_vol_20d'] = vol_20d
         market_df['market_vol_60d'] = vol_60d
@@ -285,9 +306,14 @@ class FeatureEngineer:
         market_df.loc[mask_vol, 'market_regime_vol'] = (vol_20d[mask_vol] > vol_60d[mask_vol]).astype(float)
         
         # 2. Trend Regime
-        # 20일, 60일 이동평균
+        # 20일, 60일, 120일 이동평균
         ma_20d = market_returns.rolling(window=20).mean()
         ma_60d = market_returns.rolling(window=60).mean()
+        ma_120d = market_returns.rolling(window=120).mean()
+        
+        market_df['market_ma_20d'] = ma_20d
+        market_df['market_ma_60d'] = ma_60d
+        market_df['market_ma_120d'] = ma_120d
         
         market_df['market_ma_20d'] = ma_20d
         market_df['market_ma_60d'] = ma_60d
@@ -312,8 +338,8 @@ class FeatureEngineer:
         # 따라서 현재 X는 date_id로 정렬된 상태일 가능성이 높음.
         # 안전을 위해 merge 사용.
         
-        features_to_add = ['market_vol_20d', 'market_vol_60d', 'market_regime_vol', 
-                           'market_ma_20d', 'market_ma_60d', 'market_regime_trend']
+        features_to_add = ['market_vol_20d', 'market_vol_60d', 'market_vol_120d', 'market_regime_vol', 
+                           'market_ma_20d', 'market_ma_60d', 'market_ma_120d', 'market_regime_trend']
         
         X = X.merge(market_df[['date_id'] + features_to_add], on='date_id', how='left')
         
@@ -370,6 +396,40 @@ class FeatureEngineer:
         upper_band = rolling_mean + (rolling_std * num_std)
         lower_band = rolling_mean - (rolling_std * num_std)
         return upper_band, lower_band
+
+    def _calculate_efficiency_ratio(self, series: pd.Series, window: int = 10) -> pd.Series:
+        """
+        Kaufman's Efficiency Ratio (ER)
+        ER = Change / Volatility
+        Change = abs(Price - Price_lag)
+        Volatility = Sum(abs(Price_i - Price_i-1))
+        """
+        change = series.diff(window).abs()
+        volatility = series.diff().abs().rolling(window=window).sum()
+        return change / (volatility + 1e-8)
+
+    def _calculate_semi_variance(self, series: pd.Series, window: int = 20) -> tuple:
+        """
+        Calculate Upside and Downside Semi-Variance (Volatility).
+        """
+        # Returns (assuming series is price, but here inputs are likely already returns or features)
+        # If input is price, we need returns. If input is returns, we use it directly.
+        # Based on usage in _add_advanced_features, 'col' seems to be features.
+        # If 'col' is 'Close', we need returns.
+        # But base_cols usually includes 'Close', 'Volume' etc.
+        # Let's assume we want semi-variance of the *changes* of the feature.
+        
+        delta = series.diff()
+        
+        # Upside: delta > 0
+        up_delta = delta.where(delta > 0, 0)
+        up_vol = up_delta.rolling(window=window).std()
+        
+        # Downside: delta < 0
+        down_delta = delta.where(delta < 0, 0)
+        down_vol = down_delta.rolling(window=window).std()
+        
+        return up_vol, down_vol
 
     def _add_interaction_features(self, X: pd.DataFrame) -> pd.DataFrame:
         """

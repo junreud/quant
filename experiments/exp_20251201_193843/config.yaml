@@ -1,0 +1,128 @@
+# Project Configuration
+project:
+  name: "quant_strategy"
+  version: "0.1.0"
+  description: "Low Risk, Medium Return Quant Strategy"
+
+# Data Paths
+data:
+  train: "data/raw/train.csv"
+  test: "data/raw/test.csv"
+  processed_dir: "data/processed"
+
+# Model Configuration
+model:
+  type: "lightgbm"
+  target: "forward_returns" # or "alpha"
+  random_state: 42
+
+# LightGBM Parameters (Return Model)
+lgbm_return:
+  boosting_type: gbdt
+  colsample_bytree: 0.5316925981007519
+  learning_rate: 0.03822528413626989
+  max_depth: 3
+  metric: custom # can be overridden to custom in pipeline
+  min_child_samples: 16
+  n_estimators: 902
+  num_leaves: 119
+  objective: regression
+  random_state: 42
+  reg_alpha: 0.0036672072066458307
+  reg_lambda: 0.07557162877866296
+  subsample: 0.8361421041351241
+  random_state: 42
+  verbose: -1
+
+# LightGBM Parameters (Risk Model)
+lgbm_risk:
+  alpha: 0.65
+  boosting_type: gbdt
+  colsample_bytree: 0.7859727565855609
+  learning_rate: 0.1726402496923187
+  max_depth: 10
+  metric: quantile
+  min_child_samples: 79
+  n_estimators: 440
+  num_leaves: 127
+  objective: quantile
+  reg_alpha: 0.00030546693098156555
+  reg_lambda: 2.765548009847787e-05
+  subsample: 0.7936738679573488
+  random_state: 42
+  verbose: -1
+
+# LightGBM Parameters (Risk Model 2 - Market Regime)
+lgbm_risk2:
+  boosting_type: gbdt
+  colsample_bytree: 0.7
+  learning_rate: 0.05
+  max_depth: 5
+  metric: quantile
+  min_child_samples: 20
+  n_estimators: 500
+  num_leaves: 31
+  objective: quantile
+  alpha: 0.1 # 하위 10% (최악의 상황) 예측
+  reg_alpha: 0.1
+  reg_lambda: 0.1
+  subsample: 0.8
+  random_state: 42
+  verbose: -1
+
+allocation:
+  k: 3.7 # 더 공격적으로 투자할것이다.
+  threshold: -0.012 # Quantile 0.1 예측값 기준이므로 더 낮춰야 함 (약 -2% 하락 예측 시 회피)
+
+# Feature Engineering
+features:
+  use_lagged: true # Legacy parameter, kept for compatibility
+  add_interactions: true
+  fill_missing_strategy: false # or "median", "mean", "zero", false
+  use_time_series_features: true
+  use_advanced_features: true
+  use_market_regime_features: true
+  feature_selection:
+    enabled: true
+    return_model:
+      method: "importance" # or "collinear"
+      top_k: 100
+    risk_model:
+      method: "correlation"
+      top_k: 100
+    risk2_model:
+      method: "crash_divergence"
+      top_k: 100
+      crash_threshold_quantile: 0.05 # 전체 기간 중 수익률이 가장 낮은 하위 5%인 날들을 "폭락(Crash)"으로 정의
+
+# Risk Management
+risk:
+  max_position: 2.0
+  min_position: 0.0
+  volatility_threshold: 1.2
+  conservative_mode: true
+  reduce_position_on_high_vol: true
+
+# Evaluation Metric
+metric:
+  vol_threshold: 1.2
+  use_return_penalty: true
+  min_periods: 30
+
+# Cross Validation
+cv:
+  strategy: "purged_walkforward" # timeseries, purged_walkforward
+  n_splits: 5
+  # Purged Walk-Forward 전용
+  train_size: 2000
+  test_size: 500
+  purge_gap: 20
+  # 최종 테스트
+  final_holdout: 180
+
+# Output
+output:
+  submission_dir: "results"
+  model_dir: "models"
+  log_dir: "logs"
+  skip_package: true

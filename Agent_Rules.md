@@ -41,7 +41,7 @@ To perfectly simulate the Public Leaderboard locally:
 
 ## 5. Modeling Guidelines (Phased Roadmap) ⭐ UPDATED
 
-Develop the model pipeline in the following order. **Current Status: Execute Phase 1.**
+Develop the model pipeline in the following order. **Current Status: Execute Phase 2 (Hybrid Defense).**
 
 ### [Phase 1] Dual-Model Structure (Priority)
 

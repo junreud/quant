@@ -53,6 +53,23 @@ lgbm_risk:
   random_state: 42
   verbose: -1
 
+# LightGBM Parameters (Risk Model 2 - Market Regime)
+lgbm_risk2:
+  boosting_type: gbdt
+  colsample_bytree: 0.7
+  learning_rate: 0.05
+  max_depth: 5
+  metric: rmse
+  min_child_samples: 20
+  n_estimators: 500
+  num_leaves: 31
+  objective: regression
+  reg_alpha: 0.1
+  reg_lambda: 0.1
+  subsample: 0.8
+  random_state: 42
+  verbose: -1
+
 # Feature Engineering
 features:
   use_lagged: true # Legacy parameter, kept for compatibility

@@ -74,6 +74,9 @@ class HyperparameterTuner:
                 params['objective'] = 'quantile'
                 params['metric'] = 'quantile'
                 params['alpha'] = 0.75
+            elif model_type == 'risk2':
+                params['objective'] = 'regression'
+                params['metric'] = 'rmse'
             
             # CV Strategy
             cv = get_cv_strategy(
@@ -109,13 +112,17 @@ class HyperparameterTuner:
                     # Simple correlation between pred and actual
                     score = np.corrcoef(pred, y_val)[0, 1]
                     if np.isnan(score): score = 0
-                else: # risk
+                elif model_type == 'risk':
                     # Optimize for Quantile Loss (minimize)
                     # Pinball loss for quantile 0.75
                     alpha = 0.75
                     error = y_val - pred
                     loss = np.maximum(alpha * error, (alpha - 1) * error)
                     score = -np.mean(loss) # Maximize negative loss
+                elif model_type == 'risk2':
+                    # Optimize for RMSE (minimize)
+                    rmse = np.sqrt(np.mean((pred - y_val)**2))
+                    score = -rmse # Maximize negative RMSE
                 
                 scores.append(score)
             
@@ -128,8 +135,10 @@ class HyperparameterTuner:
         # Add fixed params back
         if model_type == 'return':
             self.best_params.update({'objective': 'regression', 'metric': 'rmse', 'boosting_type': 'gbdt', 'verbosity': -1, 'random_state': 42})
-        else:
+        elif model_type == 'risk':
             self.best_params.update({'objective': 'quantile', 'metric': 'quantile', 'alpha': 0.75, 'boosting_type': 'gbdt', 'verbosity': -1, 'random_state': 42})
+        elif model_type == 'risk2':
+             self.best_params.update({'objective': 'regression', 'metric': 'rmse', 'boosting_type': 'gbdt', 'verbosity': -1, 'random_state': 42})
             
         logger.info(f"Best {model_type} Score: {self.study.best_value:.6f}")
         logger.info(f"Best {model_type} Params: {self.best_params}")

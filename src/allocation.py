@@ -168,3 +168,57 @@ def dynamic_risk_allocation(
 
 # 기본 전략 선택
 default_allocation = smart_allocation
+
+
+def triple_model_allocation(
+    return_pred: Union[np.ndarray, float],
+    risk_vol_pred: Union[np.ndarray, float],
+    risk_market_pred: Union[np.ndarray, float],
+    market_threshold: float = 0.0,
+    k: float = 1.0,
+    max_position: float = 2.0
+) -> Union[np.ndarray, float]:
+    """
+    3-Model Allocation (Return, Volatility, Market Regime).
+    
+    Logic:
+    1. Base Allocation = k * (Return / Volatility)
+    2. Market Regime Filter: If Market_Pred < Threshold, Force Position = 0.
+    
+    Parameters
+    ----------
+    return_pred : array or float
+        Model A: Return Prediction
+    risk_vol_pred : array or float
+        Model B: Volatility Prediction (abs returns)
+    risk_market_pred : array or float
+        Model C: Market Regime Prediction (market returns)
+    market_threshold : float
+        Threshold for market regime (default 0.0)
+    k : float
+        Leverage factor
+    max_position : float
+        Max position limit
+        
+    Returns
+    -------
+    array or float
+        Final Allocation
+    """
+    # 1. Base Allocation (Phase 1)
+    safe_vol = np.maximum(risk_vol_pred, 1e-6)
+    
+    # Simple Risk Parity-like allocation
+    # Position is proportional to Return/Risk
+    base_allocation = k * (return_pred / safe_vol)
+    
+    # 2. Market Regime Filter (Phase 2)
+    # If Market Return is expected to be negative, cut position.
+    if isinstance(risk_market_pred, (int, float)):
+        if risk_market_pred < market_threshold:
+            base_allocation = 0.0
+    else:
+        # Vectorized operation
+        base_allocation = np.where(risk_market_pred < market_threshold, 0.0, base_allocation)
+        
+    return np.clip(base_allocation, 0.0, max_position)

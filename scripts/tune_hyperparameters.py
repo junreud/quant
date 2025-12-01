@@ -16,7 +16,14 @@ from src.utils import get_logger, load_config
 
 logger = get_logger(name="tuning_script", level="INFO")
 
+import argparse
+
 def main():
+    parser = argparse.ArgumentParser(description="Hyperparameter Tuning")
+    parser.add_argument('--n-trials', type=int, default=50, help='Number of trials per model')
+    parser.add_argument('--cv-splits', type=int, default=5, help='Number of CV splits')
+    args = parser.parse_args()
+
     config = load_config()
     
     logger.info("=" * 80)
@@ -68,7 +75,7 @@ def main():
     logger.info(f"Tuning data: {len(X_tune)} samples")
     
     # 2. Run Tuner
-    tuner = HyperparameterTuner(n_trials=50, cv_splits=5)
+    tuner = HyperparameterTuner(n_trials=args.n_trials, cv_splits=args.cv_splits)
     
     # 2.1 Tune Return Model
     logger.info("🔧 Tuning Return Model...")
@@ -85,11 +92,26 @@ def main():
     # But here we use X_tune which already has features.
     best_risk_params = tuner.optimize(X_tune, y_risk, df_context_tune, model_type='risk')
     
+    # 2.3 Tune Risk Model 2 (Market Regime)
+    logger.info("🔧 Tuning Risk Model 2 (Market Regime)...")
+    
+    # Risk 2 Target (Market Regime)
+    if 'market_forward_excess_returns' in X_tune.columns:
+        y_risk2 = X_tune['market_forward_excess_returns']
+    elif 'market_forward_excess_returns' in df_context_tune.columns:
+        y_risk2 = df_context_tune['market_forward_excess_returns']
+    else:
+        logger.warning("⚠️ 'market_forward_excess_returns' not found. Using 'forward_returns' for Risk Model 2.")
+        y_risk2 = y_tune
+        
+    best_risk2_params = tuner.optimize(X_tune, y_risk2, df_context_tune, model_type='risk2')
+    
     # 3. Save Results
     # Combine into config structure
     final_params = {
         'lgbm_return': best_return_params,
-        'lgbm_risk': best_risk_params
+        'lgbm_risk': best_risk_params,
+        'lgbm_risk2': best_risk2_params
     }
     
     output_path = project_root / "conf" / "best_params.yaml"

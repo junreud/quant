@@ -1,31 +1,47 @@
 lgbm_return:
   boosting_type: gbdt
-  colsample_bytree: 0.6463690356822793
-  learning_rate: 0.019669807903669158
-  max_depth: 6
+  colsample_bytree: 0.9901742314701477
+  learning_rate: 0.014942435761050315
+  max_depth: 7
   metric: rmse
-  min_child_samples: 25
-  n_estimators: 611
-  num_leaves: 32
+  min_child_samples: 90
+  n_estimators: 241
+  num_leaves: 94
   objective: regression
   random_state: 42
-  reg_alpha: 0.0004293715196630177
-  reg_lambda: 8.084529045718213e-05
-  subsample: 0.7896286210514529
+  reg_alpha: 1.0592800922319432e-06
+  reg_lambda: 6.401199091696218e-06
+  subsample: 0.5042009407789527
   verbosity: -1
 lgbm_risk:
   alpha: 0.75
   boosting_type: gbdt
-  colsample_bytree: 0.983801688747282
-  learning_rate: 0.2571175720207882
-  max_depth: 3
+  colsample_bytree: 0.5363835757284294
+  learning_rate: 0.024331414436560977
+  max_depth: 8
   metric: quantile
-  min_child_samples: 11
-  n_estimators: 450
-  num_leaves: 122
+  min_child_samples: 33
+  n_estimators: 373
+  num_leaves: 67
   objective: quantile
   random_state: 42
-  reg_alpha: 0.0576035827586732
-  reg_lambda: 0.030479632458472995
-  subsample: 0.7488341744844536
+  reg_alpha: 6.517887513275906e-08
+  reg_lambda: 0.05423416369182127
+  subsample: 0.5810787426634036
+  verbosity: -1
+lgbm_risk2:
+  alpha: 0.75
+  boosting_type: gbdt
+  colsample_bytree: 0.7296265121534002
+  learning_rate: 0.2143223976591336
+  max_depth: 8
+  metric: rmse
+  min_child_samples: 17
+  n_estimators: 622
+  num_leaves: 21
+  objective: regression
+  random_state: 42
+  reg_alpha: 1.7043265380853563e-07
+  reg_lambda: 7.434448426688961e-07
+  subsample: 0.6265187252989182
   verbosity: -1

@@ -132,10 +132,12 @@ def run_full_pipeline(
     
     oof_predictions = np.zeros(len(X_cv))
     oof_risk_predictions = np.zeros(len(X_cv)) # Risk OOF
+    oof_risk2_predictions = np.zeros(len(X_cv)) # Risk 2 OOF (Market Regime)
     oof_mask = np.zeros(len(X_cv), dtype=bool)
     
     models_return = []
     models_risk = []
+    models_risk2 = []
     
     # Custom Objectives & Metrics
     from src.custom_objectives import correlation_metric
@@ -149,12 +151,27 @@ def run_full_pipeline(
     # Objective and metric are already set in config, but good to ensure
     risk_lgbm_params['objective'] = 'quantile'
     risk_lgbm_params['metric'] = 'quantile'
+
+    # 3. Risk Model 2 Params (Market Regime)
+    risk2_lgbm_params = config.get('lgbm_risk2', config['lgbm_return'].copy())
+    # Ensure metric is set (default rmse)
+    if 'metric' not in risk2_lgbm_params:
+        risk2_lgbm_params['metric'] = 'rmse'
     # FeatureSelector를 사용하여 Risk Target(abs returns)과 상관관계가 높은 Feature 선별
     from src.feature_selection import FeatureSelector
     risk_selector = FeatureSelector()
     
     # Risk Target 생성
     y_risk_target = y.abs()
+    
+    # Risk 2 Target (Market Regime)
+    # Use market_forward_excess_returns if available, else use forward_returns
+    if 'market_forward_excess_returns' in df.columns:
+        # Ensure alignment with X (in case pipeline dropped rows)
+        y_risk2_target = df.loc[X.index, 'market_forward_excess_returns']
+    else:
+        logger.warning("⚠️ 'market_forward_excess_returns' not found. Using 'forward_returns' for Risk Model 2.")
+        y_risk2_target = y
     
     risk_top_k = config['features']['feature_selection']['risk_model']['top_k']
     risk_features = risk_selector.select_by_correlation(X, y_risk_target, method='spearman', top_k=risk_top_k)
@@ -169,7 +186,7 @@ def run_full_pipeline(
     
     fold_scores = []
     
-    from src.allocation import risk_adjusted_allocation
+    from src.allocation import risk_adjusted_allocation, triple_model_allocation
     
     for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X_cv)):
         logger.info(f"\n  Fold {fold_idx + 1}/{cv_splits} | Train: {len(train_idx)} | Val: {len(val_idx)}")
@@ -200,23 +217,37 @@ def run_full_pipeline(
             callbacks=[lgb.log_evaluation(0)]
         )
         
+        # 3. Risk Model 2 Training (Target: Market Returns)
+        y_train_risk2 = y_risk2_target.iloc[train_idx]
+        y_val_risk2 = y_risk2_target.iloc[val_idx]
+        
+        model_risk2 = lgb.LGBMRegressor(**risk2_lgbm_params)
+        model_risk2.fit(
+            X_train_fold, y_train_risk2,
+            eval_set=[(X_val_fold, y_val_risk2)],
+            eval_metric=risk2_lgbm_params['metric'],
+            callbacks=[lgb.log_evaluation(0)]
+        )
+        
         # OOF predictions
         pred_return = model_return.predict(X_val_fold)
         pred_risk = model_risk.predict(X_val_fold[risk_features])
+        pred_risk2 = model_risk2.predict(X_val_fold)
         
         oof_predictions[val_idx] = pred_return
         oof_risk_predictions[val_idx] = pred_risk
+        oof_risk2_predictions[val_idx] = pred_risk2
         oof_mask[val_idx] = True
         
-        # Fold score (Risk-Adjusted Allocation)
-        # k값은 하이퍼파라미터지만 일단 1.0 또는 config에서 가져옴
-        # 여기서는 smart_allocation의 sensitivity와 유사한 역할을 하는 k를 찾아야 함.
-        # 기존 smart_allocation: 1.0 + pred * 20
-        # Risk-Adjusted: k * (pred / risk)
-        # risk가 평균적으로 0.01 수준이라면, pred/risk는 1.0 수준.
-        # 따라서 k=1.0이면 포지션이 1.0 근처가 됨.
-        
-        fold_allocations = risk_adjusted_allocation(pred_return, pred_risk, k=0.5) # k=0.5 (Conservative start)
+        # Fold score (Triple Model Allocation)
+        # k=1.0, threshold=0.0
+        fold_allocations = triple_model_allocation(
+            return_pred=pred_return,
+            risk_vol_pred=pred_risk,
+            risk_market_pred=pred_risk2,
+            market_threshold=0.0,
+            k=0.5
+        )
         
         val_df_fold = df_cv.iloc[val_idx]
         
@@ -230,11 +261,13 @@ def run_full_pipeline(
         fold_scores.append(fold_result['score'])
         models_return.append(model_return)
         models_risk.append(model_risk)
+        models_risk2.append(model_risk2)
         
             # Log metrics (Handle different metric names safely)
         ret_score = model_return.best_score_['valid_0'].get('correlation', 0.0)
         risk_score = model_risk.best_score_['valid_0'].get('quantile', 0.0)
-        logger.info(f"  ✅ Fold {fold_idx + 1} Score: {fold_result['score']:.6f} | Return IC: {ret_score:.4f} | Risk Quantile: {risk_score:.4f}")
+        risk2_score = model_risk2.best_score_['valid_0'].get(risk2_lgbm_params['metric'], 0.0)
+        logger.info(f"  ✅ Fold {fold_idx + 1} Score: {fold_result['score']:.6f} | Ret IC: {ret_score:.4f} | Risk Q: {risk_score:.4f} | Mkt {risk2_lgbm_params['metric']}: {risk2_score:.4f}")
     
     logger.info(f"\n✅ CV Training complete | OOF samples: {oof_mask.sum()}/{len(X_cv)}")
     logger.info(f"📊 Fold Scores: {', '.join([f'{s:.4f}' for s in fold_scores])}")
@@ -249,35 +282,19 @@ def run_full_pipeline(
     
     oof_df = df_cv[oof_mask]
     oof_pred_return = oof_predictions[oof_mask]
+    oof_df = df_cv[oof_mask]
+    oof_pred_return = oof_predictions[oof_mask]
     oof_pred_risk = oof_risk_predictions[oof_mask]
+    oof_pred_risk2 = oof_risk2_predictions[oof_mask]
     
     # Allocation
-    # Allocation (Dynamic Z-Score)
-    # Calculate rolling stats of predictions
-    pred_series = pd.Series(oof_pred_return)
-    rolling_window = 20
-    
-    # We need to be careful with OOF. 
-    # Since OOF is concatenated from folds, the boundary between folds might have jumps.
-    # But for simplicity, we treat it as a continuous series (sorted by date).
-    # Ideally, we should do this PER FOLD or ensure sorted by date.
-    # df_cv is sorted by date? Yes, usually.
-    
-    # Calculate Rolling Mean/Std
-    # Min_periods=1 to have values at start
-    roll_mean = pred_series.rolling(window=rolling_window, min_periods=1).mean()
-    roll_std = pred_series.rolling(window=rolling_window, min_periods=1).std()
-    
-    # Use Dynamic Allocation
-    # Import locally to avoid circular import issues if any
-    from src.allocation import dynamic_risk_allocation
-    
-    allocations = dynamic_risk_allocation(
+    # Use Triple Model Allocation
+    allocations = triple_model_allocation(
         return_pred=oof_pred_return,
-        risk_pred=oof_pred_risk,
-        rolling_mean=roll_mean.values,
-        rolling_std=roll_std.values,
-        k=config['lgbm_risk']['k']
+        risk_vol_pred=oof_pred_risk,
+        risk_market_pred=oof_pred_risk2,
+        market_threshold=0.0,
+        k=config['lgbm_risk']['k'] # Reuse k from risk config or add new one
     )
     
     results = metric_calculator.calculate_score(
@@ -304,7 +321,9 @@ def run_full_pipeline(
         'date_id': oof_df['date_id'] if 'date_id' in oof_df.columns else oof_df.index,
         'actual_return': oof_df['forward_returns'].values,
         'pred_return': oof_pred_return,
+        'pred_return': oof_pred_return,
         'pred_risk': oof_pred_risk,
+        'pred_risk2': oof_pred_risk2,
         'allocation': allocations
     })
     oof_df_save.to_csv(oof_save_path, index=False)
@@ -323,7 +342,12 @@ def run_full_pipeline(
     
     # Risk Model
     final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
+    final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk.fit(X_cv[risk_features], y_cv.abs(), eval_metric='quantile')
+    
+    # Risk Model 2
+    final_model_risk2 = lgb.LGBMRegressor(**risk2_lgbm_params)
+    final_model_risk2.fit(X_cv, y_risk2_target.iloc[:len(X_cv)], eval_metric=risk2_lgbm_params['metric'])
     
     logger.info(f"✅ Final models trained on {len(X_cv)} samples")
     
@@ -335,20 +359,17 @@ def run_full_pipeline(
     logger.info("=" * 80)
     
     test_pred_ret = final_model_return.predict(X_test)
+    test_pred_ret = final_model_return.predict(X_test)
     test_pred_risk = final_model_risk.predict(X_test[risk_features])
+    test_pred_risk2 = final_model_risk2.predict(X_test)
     
-    # Dynamic Allocation for Test
-    # Calculate rolling stats
-    test_pred_series = pd.Series(test_pred_ret)
-    test_roll_mean = test_pred_series.rolling(window=20, min_periods=1).mean()
-    test_roll_std = test_pred_series.rolling(window=20, min_periods=1).std()
-    
-    test_allocations = dynamic_risk_allocation(
+    # Triple Allocation for Test
+    test_allocations = triple_model_allocation(
         return_pred=test_pred_ret,
-        risk_pred=test_pred_risk,
-        rolling_mean=test_roll_mean.values,
-        rolling_std=test_roll_std.values,
-        k=0.5
+        risk_vol_pred=test_pred_risk,
+        risk_market_pred=test_pred_risk2,
+        market_threshold=0.0,
+        k=config['lgbm_risk']['k']
     )
     
     test_results = metric_calculator.calculate_score(
@@ -364,10 +385,10 @@ def run_full_pipeline(
         'date_id': df_test['date_id'] if 'date_id' in df_test.columns else df_test.index,
         'actual_return': df_test['forward_returns'].values,
         'pred_return': test_pred_ret,
+        'pred_return': test_pred_ret,
         'pred_risk': test_pred_risk,
+        'pred_risk2': test_pred_risk2,
         'allocation': test_allocations,
-        'roll_mean': test_roll_mean.values,
-        'roll_std': test_roll_std.values
     })
     test_df_save.to_csv(test_save_path, index=False)
     logger.info(f"💾 Test predictions saved to: {test_save_path}")
@@ -393,7 +414,11 @@ def run_full_pipeline(
     final_model_return_all.fit(X, y)
     
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
+    final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk_all.fit(X[risk_features], y.abs())
+    
+    final_model_risk2_all = lgb.LGBMRegressor(**risk2_lgbm_params)
+    final_model_risk2_all.fit(X, y_risk2_target)
     
     logger.info(f"✅ Final models retrained on {len(X)} samples")
     
@@ -413,6 +438,7 @@ def run_full_pipeline(
         pickle.dump({
             'model_return': final_model_return_all,
             'model_risk': final_model_risk_all,
+            'model_risk2': final_model_risk2_all,
             'pipeline': pipeline,
             'feature_cols': pipeline.feature_engineer.feature_cols,
             'config': config
@@ -461,6 +487,7 @@ def run_full_pipeline(
         pickle.dump({
             'model_return': final_model_return_all,
             'model_risk': final_model_risk_all,
+            'model_risk2': final_model_risk2_all,
             'feature_cols': feature_cols,
             'risk_features': risk_features,
             'config': config,

@@ -218,6 +218,37 @@ def predict(test, model_path: str = "triple_model.pkl"):
     # ========================================
     # Triple Model Allocation
     # ========================================
+    
+    # Calculate Trend Signal (Momentum Guard)
+    # Use HISTORY_BUFFER to calculate MA20
+    trend_signal = 1.0 # Default Bullish
+    
+    if HISTORY_BUFFER is not None and not HISTORY_BUFFER.empty:
+        # Check if 'close' or 'Close' exists
+        close_col = None
+        for col in ['close', 'Close', 'adj_close', 'Adj Close']:
+            if col in HISTORY_BUFFER.columns:
+                close_col = col
+                break
+        
+        if close_col:
+            # Need at least 20 days
+            if len(HISTORY_BUFFER) >= 20:
+                # Calculate MA20
+                ma20 = HISTORY_BUFFER[close_col].rolling(window=20).mean().iloc[-1]
+                current_price = HISTORY_BUFFER[close_col].iloc[-1]
+                
+                # Signal: 1.0 if Price >= MA20, 0.0 if Price < MA20
+                if current_price < ma20:
+                    trend_signal = 0.0 # Bearish
+                    print(f"📉 Momentum Guard Triggered: Price({current_price:.2f}) < MA20({ma20:.2f})")
+                else:
+                    print(f"📈 Momentum Guard: Bullish (Price {current_price:.2f} >= MA20 {ma20:.2f})")
+            else:
+                print(f"⚠️ Not enough history for MA20 ({len(HISTORY_BUFFER)} < 20)")
+        else:
+            print("⚠️ Close price column not found in history for Momentum Guard.")
+    
     from src.allocation import triple_model_allocation
     
     # Use config values if available, else defaults
@@ -229,7 +260,8 @@ def predict(test, model_path: str = "triple_model.pkl"):
         risk_vol_pred=pred_risk,
         risk_market_pred=pred_risk2,
         market_threshold=threshold,
-        k=k
+        k=k,
+        trend_signal=trend_signal
     )
     
     return float(allocation)

@@ -95,6 +95,17 @@ def run_full_pipeline(
     X, y = pipeline.fit_transform(df)
     feature_cols = pipeline.get_feature_names()
     
+    # Calculate MA20 for Momentum Guard
+    # Assuming 'Close' column exists in raw df
+    if 'Close' in df.columns:
+        ma20 = df['Close'].rolling(window=20).mean()
+        # Trend Signal: True if Close >= MA20 (Bullish), False if Close < MA20 (Bearish)
+        # Handle NaN by assuming Bullish (True) to avoid penalty at start
+        trend_signal = (df['Close'] >= ma20) | ma20.isna()
+    else:
+        logger.warning("⚠️ 'Close' column not found. Momentum Guard disabled.")
+        trend_signal = pd.Series(True, index=df.index)
+        
     logger.info(f"✅ Data loaded: {X.shape[0]} samples, {X.shape[1]} features")
     
     # 마지막 N일 분리 (최종 테스트용) - config에서 읽기
@@ -177,9 +188,8 @@ def run_full_pipeline(
     # 2. Risk Model Feature Selection (Correlation)
     # Risk Target 생성
     
-    # Risk Target 생성 (Downside Risk)
-    # y_risk_target = y.abs() # Old: Volatility
-    y_risk_target = (-y).clip(lower=0) # New: Downside Risk (ReLU(-return))
+    # Risk Target 생성
+    y_risk_target = y.abs()
     
     # Risk 2 Target (Market Regime)
     # Use market_forward_excess_returns if available, else use forward_returns
@@ -241,9 +251,9 @@ def run_full_pipeline(
             callbacks=[lgb.log_evaluation(0)]
         )
         
-        # 2. Risk Model Training (Target: Downside Risk)
-        y_train_risk = (-y_train_fold).clip(lower=0)
-        y_val_risk = (-y_val_fold).clip(lower=0)
+        # 2. Risk Model Training (Target: abs(returns))
+        y_train_risk = y_train_fold.abs()
+        y_val_risk = y_val_fold.abs()
         
         model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
         model_risk.fit(
@@ -275,6 +285,19 @@ def run_full_pipeline(
         oof_risk2_predictions[val_idx] = pred_risk2
         oof_mask[val_idx] = True
         
+        # Calculate Trend Signal (Price >= MA20)
+        # We need Close price for validation set.
+        # Assuming 'Close' is in df_cv (loaded from train.csv).
+        # If 'Close' is not available, try to approximate or skip.
+        # Check if 'Close' exists
+        if 'Close' in df_cv.columns:
+            close_prices = df_cv.iloc[val_idx]['Close']
+            # We need rolling mean. But val_idx is a chunk. 
+            # We should calculate MA20 for the whole df_cv first.
+            pass
+        
+        # Better approach: Calculate MA20 for entire df at start
+        
         # Fold score (Triple Model Allocation)
         # k=1.0, threshold=0.0
         fold_allocations = triple_model_allocation(
@@ -282,7 +305,8 @@ def run_full_pipeline(
             risk_vol_pred=pred_risk,
             risk_market_pred=pred_risk2,
             market_threshold=config['allocation']['threshold'],
-            k=config['allocation']['k']
+            k=config['allocation']['k'],
+            trend_signal=trend_signal.iloc[val_idx].values
         )
         
         val_df_fold = df_cv.iloc[val_idx]
@@ -330,7 +354,8 @@ def run_full_pipeline(
         risk_vol_pred=oof_pred_risk,
         risk_market_pred=oof_pred_risk2,
         market_threshold=config['allocation']['threshold'],
-        k=config['allocation']['k']
+        k=config['allocation']['k'],
+        trend_signal=trend_signal.iloc[:len(df_cv)][oof_mask].values
     )
     
     results = metric_calculator.calculate_score(
@@ -384,7 +409,7 @@ def run_full_pipeline(
     
     # Risk Model
     final_model_risk = lgb.LGBMRegressor(**risk_lgbm_params)
-    final_model_risk.fit(X_cv[risk_features], (-y_cv).clip(lower=0), eval_metric='quantile')
+    final_model_risk.fit(X_cv[risk_features], y_cv.abs(), eval_metric='quantile')
     
     # Risk Model 2
     final_model_risk2 = lgb.LGBMRegressor(**risk2_lgbm_params)
@@ -410,7 +435,8 @@ def run_full_pipeline(
         risk_vol_pred=test_pred_risk,
         risk_market_pred=test_pred_risk2,
         market_threshold=config['allocation']['threshold'],
-        k=config['allocation']['k']
+        k=config['allocation']['k'],
+        trend_signal=trend_signal.iloc[-holdout_size:].values
     )
     
     test_results = metric_calculator.calculate_score(
@@ -459,7 +485,7 @@ def run_full_pipeline(
     
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
-    final_model_risk_all.fit(X[risk_features], (-y).clip(lower=0))
+    final_model_risk_all.fit(X[risk_features], y.abs())
     
     final_model_risk2_all = lgb.LGBMRegressor(**risk2_lgbm_params)
     final_model_risk2_all.fit(X[risk2_features], y_risk2_target)
@@ -581,7 +607,7 @@ def run_full_pipeline(
         # But user asked for "individual model performance".
         # Let's calculate them on OOF predictions.
         "return_ic": np.corrcoef(oof_pred_return, oof_df['forward_returns'])[0, 1],
-        "risk_quantile": np.mean(np.maximum(0.75 * ((-oof_df['forward_returns']).clip(lower=0) - oof_pred_risk), (0.75 - 1) * ((-oof_df['forward_returns']).clip(lower=0) - oof_pred_risk))), # Negative of score
+        "risk_quantile": np.mean(np.maximum(0.75 * (oof_df['forward_returns'].abs() - oof_pred_risk), (0.75 - 1) * (oof_df['forward_returns'].abs() - oof_pred_risk))), # Negative of score
         # Risk 2 RMSE (Market Regime)
         # We need y_risk2_target aligned with OOF.
         # It's tricky because y_risk2_target might be different from forward_returns.

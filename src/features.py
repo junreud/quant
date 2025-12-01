@@ -131,7 +131,7 @@ class FeatureEngineer:
         """
         if 'forward_returns' not in df.columns:
             raise ValueError("Target column 'forward_returns' not found!")
-        return df['forward_returns'].apply(lambda x: max(0, -x))
+        return df['forward_returns'].abs()
 
     def _add_time_series_features(self, X: pd.DataFrame, date_id: pd.Series) -> pd.DataFrame:
         """

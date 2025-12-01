@@ -176,7 +176,9 @@ def triple_model_allocation(
     risk_market_pred: Union[np.ndarray, float],
     market_threshold: float = 0.0,
     k: float = 1.0,
-    max_position: float = 2.0
+    max_position: float = 2.0,
+    trend_signal: Union[np.ndarray, float] = None,
+    trend_penalty: float = 0.5
 ) -> Union[np.ndarray, float]:
     """
     3-Model Allocation (Return, Volatility, Market Regime).
@@ -199,6 +201,11 @@ def triple_model_allocation(
         Leverage factor
     max_position : float
         Max position limit
+    trend_signal : array or float (Optional)
+        1.0 for Bullish, 0.0 for Bearish (or boolean).
+        If provided, allocation is penalized when 0.0 (Bearish).
+    trend_penalty : float
+        Penalty multiplier for Bearish trend (default 0.5).
         
     Returns
     -------
@@ -221,4 +228,16 @@ def triple_model_allocation(
         # Vectorized operation
         base_allocation = np.where(risk_market_pred < market_threshold, 0.0, base_allocation)
         
+    # 3. Momentum Guard (Phase 3)
+    # If Trend is Bearish (trend_signal == 0 or False), reduce allocation.
+    if trend_signal is not None:
+        if isinstance(trend_signal, (int, float, bool)):
+            if not trend_signal: # 0 or False
+                base_allocation *= trend_penalty
+        else:
+            # Vectorized
+            # If trend_signal is True/1, keep 1.0. If False/0, multiply by trend_penalty.
+            multiplier = np.where(trend_signal, 1.0, trend_penalty)
+            base_allocation *= multiplier
+
     return np.clip(base_allocation, 0.0, max_position)

@@ -13,23 +13,43 @@ data:
 # Model Configuration
 model:
   type: "lightgbm"
-  target: "alpha" # or "forward_returns"
+  target: "forward_returns" # or "alpha"
   random_state: 42
 
-# LightGBM Parameters
-lgbm:
-  objective: "regression"
-  metric: "rmse"
-  boosting_type: "gbdt"
-  colsample_bytree: 0.9717117220241047
-  learning_rate: 0.2025894421289746
+# LightGBM Parameters (Return Model)
+lgbm_return:
+  boosting_type: gbdt
+  colsample_bytree: 0.5316925981007519
+  learning_rate: 0.03822528413626989
+  max_depth: 3
+  metric: rmse # can be overridden to custom in pipeline
+  min_child_samples: 16
+  n_estimators: 902
+  num_leaves: 119
+  objective: regression
+  random_state: 42
+  reg_alpha: 0.0036672072066458307
+  reg_lambda: 0.07557162877866296
+  subsample: 0.8361421041351241
+  random_state: 42
+  verbose: -1
+
+# LightGBM Parameters (Risk Model)
+lgbm_risk:
+  alpha: 0.65
+  k: 0.7
+  boosting_type: gbdt
+  colsample_bytree: 0.7859727565855609
+  learning_rate: 0.1726402496923187
   max_depth: 10
-  min_child_samples: 49
-  n_estimators: 897
-  num_leaves: 112
-  reg_alpha: 6.729363639115598e-05
-  reg_lambda: 0.0009932956503558112
-  subsample: 0.8858383129967532
+  metric: quantile
+  min_child_samples: 79
+  n_estimators: 440
+  num_leaves: 127
+  objective: quantile
+  reg_alpha: 0.00030546693098156555
+  reg_lambda: 2.765548009847787e-05
+  subsample: 0.7936738679573488
   random_state: 42
   verbose: -1
 
@@ -45,10 +65,10 @@ features:
     enabled: true
     return_model:
       method: "importance" # or "collinear"
-      top_k: 100
+      top_k: 500
     risk_model:
       method: "correlation"
-      top_k: 100
+      top_k: 500
 
 # Risk Management
 risk:
@@ -80,4 +100,4 @@ output:
   submission_dir: "results"
   model_dir: "models"
   log_dir: "logs"
-  skip_package: false
+  skip_package: true

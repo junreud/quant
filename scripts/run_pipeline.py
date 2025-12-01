@@ -137,22 +137,17 @@ def run_full_pipeline(
     models_return = []
     models_risk = []
     
-    lgbm_params = config['lgbm'].copy()
-    
     # Custom Objectives & Metrics
     from src.custom_objectives import correlation_metric
     
     # 1. Return Model Params
-    # Use RMSE for optimization (stable), but Correlation (IC) for Early Stopping
-    return_lgbm_params = lgbm_params.copy()
-    return_lgbm_params['metric'] = 'custom' # Will use feval
+    return_lgbm_params = config['lgbm_return'].copy()
+    return_lgbm_params['metric'] = 'custom' # Keep custom metric override for code logic
     
     # 2. Risk Model Params
-    # Use Quantile Regression to penalize under-estimation
-    # alpha=0.75 means we predict the 75th percentile of volatility (Safety Buffer)
-    risk_lgbm_params = lgbm_params.copy()
+    risk_lgbm_params = config['lgbm_risk'].copy()
+    # Objective and metric are already set in config, but good to ensure
     risk_lgbm_params['objective'] = 'quantile'
-    risk_lgbm_params['alpha'] = 0.75
     risk_lgbm_params['metric'] = 'quantile'
     # FeatureSelector를 사용하여 Risk Target(abs returns)과 상관관계가 높은 Feature 선별
     from src.feature_selection import FeatureSelector
@@ -238,7 +233,7 @@ def run_full_pipeline(
         
             # Log metrics (Handle different metric names safely)
         ret_score = model_return.best_score_['valid_0'].get('correlation', 0.0)
-        risk_score = model_return.best_score_['valid_0'].get('quantile', 0.0)
+        risk_score = model_risk.best_score_['valid_0'].get('quantile', 0.0)
         logger.info(f"  ✅ Fold {fold_idx + 1} Score: {fold_result['score']:.6f} | Return IC: {ret_score:.4f} | Risk Quantile: {risk_score:.4f}")
     
     logger.info(f"\n✅ CV Training complete | OOF samples: {oof_mask.sum()}/{len(X_cv)}")
@@ -257,7 +252,33 @@ def run_full_pipeline(
     oof_pred_risk = oof_risk_predictions[oof_mask]
     
     # Allocation
-    allocations = risk_adjusted_allocation(oof_pred_return, oof_pred_risk, k=0.5)
+    # Allocation (Dynamic Z-Score)
+    # Calculate rolling stats of predictions
+    pred_series = pd.Series(oof_pred_return)
+    rolling_window = 20
+    
+    # We need to be careful with OOF. 
+    # Since OOF is concatenated from folds, the boundary between folds might have jumps.
+    # But for simplicity, we treat it as a continuous series (sorted by date).
+    # Ideally, we should do this PER FOLD or ensure sorted by date.
+    # df_cv is sorted by date? Yes, usually.
+    
+    # Calculate Rolling Mean/Std
+    # Min_periods=1 to have values at start
+    roll_mean = pred_series.rolling(window=rolling_window, min_periods=1).mean()
+    roll_std = pred_series.rolling(window=rolling_window, min_periods=1).std()
+    
+    # Use Dynamic Allocation
+    # Import locally to avoid circular import issues if any
+    from src.allocation import dynamic_risk_allocation
+    
+    allocations = dynamic_risk_allocation(
+        return_pred=oof_pred_return,
+        risk_pred=oof_pred_risk,
+        rolling_mean=roll_mean.values,
+        rolling_std=roll_std.values,
+        k=config['lgbm_risk']['k']
+    )
     
     results = metric_calculator.calculate_score(
         allocations=allocations,
@@ -316,7 +337,19 @@ def run_full_pipeline(
     test_pred_ret = final_model_return.predict(X_test)
     test_pred_risk = final_model_risk.predict(X_test[risk_features])
     
-    test_allocations = risk_adjusted_allocation(test_pred_ret, test_pred_risk, k=0.5)
+    # Dynamic Allocation for Test
+    # Calculate rolling stats
+    test_pred_series = pd.Series(test_pred_ret)
+    test_roll_mean = test_pred_series.rolling(window=20, min_periods=1).mean()
+    test_roll_std = test_pred_series.rolling(window=20, min_periods=1).std()
+    
+    test_allocations = dynamic_risk_allocation(
+        return_pred=test_pred_ret,
+        risk_pred=test_pred_risk,
+        rolling_mean=test_roll_mean.values,
+        rolling_std=test_roll_std.values,
+        k=0.5
+    )
     
     test_results = metric_calculator.calculate_score(
         allocations=test_allocations,
@@ -324,6 +357,20 @@ def run_full_pipeline(
         market_returns=df_test['forward_returns'].values,
         risk_free_rate=df_test['risk_free_rate'].values
     )
+    
+    # Save Test predictions for analysis
+    test_save_path = project_root / config['output']['submission_dir'] / 'test_predictions.csv'
+    test_df_save = pd.DataFrame({
+        'date_id': df_test['date_id'] if 'date_id' in df_test.columns else df_test.index,
+        'actual_return': df_test['forward_returns'].values,
+        'pred_return': test_pred_ret,
+        'pred_risk': test_pred_risk,
+        'allocation': test_allocations,
+        'roll_mean': test_roll_mean.values,
+        'roll_std': test_roll_std.values
+    })
+    test_df_save.to_csv(test_save_path, index=False)
+    logger.info(f"💾 Test predictions saved to: {test_save_path}")
     
     logger.info(f"\n{'='*80}")
     logger.info(f"🎯 FINAL TEST RESULTS")
@@ -342,7 +389,7 @@ def run_full_pipeline(
     # 최종 모델 재학습 (전체 데이터)
     logger.info(f"\n🔄 Retraining on ALL data for submission...")
     
-    final_model_return_all = lgb.LGBMRegressor(**lgbm_params)
+    final_model_return_all = lgb.LGBMRegressor(**return_lgbm_params)
     final_model_return_all.fit(X, y)
     
     final_model_risk_all = lgb.LGBMRegressor(**risk_lgbm_params)
@@ -385,6 +432,28 @@ def run_full_pipeline(
     history_df = df.tail(200).reset_index(drop=True)
     history_df.to_pickle(history_save_path)
     logger.info(f"✅ History buffer saved: {history_save_path} (200 samples)")
+    
+    # Save Prediction History for Dynamic Allocation
+    # We use the OOF predictions (or we could predict on the history_df)
+    # Since history_df is the last 200 rows of TRAIN, we should use predictions on THEM.
+    # But we don't have predictions on history_df readily available unless they are in OOF.
+    # If history_df is part of the last fold's validation, it's in OOF.
+    # If we retrained on ALL data, we should ideally predict on history_df with the FINAL model.
+    # Let's do that to be consistent with the model we ship.
+    
+    logger.info("🔮 Generating prediction history for inference buffer...")
+    # Preprocess history_df
+    X_history = pipeline.transform(history_df, return_target=False)
+    
+    # Predict with FINAL models
+    pred_history_return = final_model_return_all.predict(X_history)
+    
+    pred_history_path = model_dir / 'pred_history.pkl'
+    with open(pred_history_path, 'wb') as f:
+        pickle.dump(list(pred_history_return), f)
+        
+    logger.info(f"✅ Prediction history saved: {pred_history_path} ({len(pred_history_return)} samples)")
+    
     ensure_dir(model_dir)
     
     model_path = model_dir / "dual_model.pkl"
@@ -459,8 +528,10 @@ def run_full_pipeline(
         "cv_splits": cv_splits,
         "train_size": 2000 if cv_strategy == 'purged_walkforward' else len(X_cv),
         "test_size": 500 if cv_strategy == 'purged_walkforward' else 0,
-        "lgbm_n_estimators": lgbm_params.get('n_estimators'),
-        "lgbm_learning_rate": lgbm_params.get('learning_rate'),
+        "return_n_estimators": return_lgbm_params.get('n_estimators'),
+        "return_learning_rate": return_lgbm_params.get('learning_rate'),
+        "risk_n_estimators": risk_lgbm_params.get('n_estimators'),
+        "risk_learning_rate": risk_lgbm_params.get('learning_rate'),
     }
     
     exp_results = {

@@ -1,9 +1,31 @@
-colsample_bytree: 0.9717117220241047
-learning_rate: 0.2025894421289746
-max_depth: 10
-min_child_samples: 49
-n_estimators: 897
-num_leaves: 112
-reg_alpha: 6.729363639115598e-05
-reg_lambda: 0.0009932956503558112
-subsample: 0.8858383129967532
+lgbm_return:
+  boosting_type: gbdt
+  colsample_bytree: 0.6463690356822793
+  learning_rate: 0.019669807903669158
+  max_depth: 6
+  metric: rmse
+  min_child_samples: 25
+  n_estimators: 611
+  num_leaves: 32
+  objective: regression
+  random_state: 42
+  reg_alpha: 0.0004293715196630177
+  reg_lambda: 8.084529045718213e-05
+  subsample: 0.7896286210514529
+  verbosity: -1
+lgbm_risk:
+  alpha: 0.75
+  boosting_type: gbdt
+  colsample_bytree: 0.983801688747282
+  learning_rate: 0.2571175720207882
+  max_depth: 3
+  metric: quantile
+  min_child_samples: 11
+  n_estimators: 450
+  num_leaves: 122
+  objective: quantile
+  random_state: 42
+  reg_alpha: 0.0576035827586732
+  reg_lambda: 0.030479632458472995
+  subsample: 0.7488341744844536
+  verbosity: -1

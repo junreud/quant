@@ -109,5 +109,62 @@ def risk_adjusted_allocation(
     return np.clip(raw_allocation, 0.0, max_position)
 
 
+def dynamic_risk_allocation(
+    return_pred: Union[np.ndarray, float],
+    risk_pred: Union[np.ndarray, float],
+    rolling_mean: Union[np.ndarray, float],
+    rolling_std: Union[np.ndarray, float],
+    k: float = 0.5,
+    max_position: float = 2.0
+) -> Union[np.ndarray, float]:
+    """
+    동적 리스크 조정 자산 배분 (Z-Score 기반).
+    
+    절대적인 수익률 예측값 대신 상대적 강도(Z-Score)를 사용합니다.
+    포지션 = k * (Z-Score / 리스크)
+    
+    Parameters
+    ----------
+    return_pred : array or float
+        현재 수익률 예측값
+    risk_pred : array or float
+        현재 리스크 예측값
+    rolling_mean : array or float
+        과거 수익률 예측값들의 이동 평균
+    rolling_std : array or float
+        과거 수익률 예측값들의 이동 표준편차
+    k : float
+        스케일링 계수 (레버리지 팩터)
+    max_position : float
+        최대 포지션 제한
+        
+    Returns
+    -------
+    array or float
+        자산 배분 비중 [0, max_position]
+    """
+    # 1. Z-Score (상대적 강도) 계산
+    # 0으로 나누기 방지
+    safe_std = np.maximum(rolling_std, 1e-8)
+    z_score = (return_pred - rolling_mean) / safe_std
+    
+    # 2. 리스크 조정
+    safe_risk = np.maximum(risk_pred, 1e-6)
+    
+    # 3. 자산 배분 로직
+    # Z-Score 기반 배분
+    # Z-Score는 "평소보다 얼마나 좋은가"를 시그마 단위로 나타냄.
+    # Allocation = k * Z_Score
+    # 예: k=0.5이고 Z-Score=1.0 (1시그마 호재)이면 포지션 50%.
+    #     Z-Score=2.0 (2시그마 호재)이면 포지션 100%.
+    
+    # 기존 로직 (Signal / Risk)은 Signal이 너무 작아서 배분이 미미했음.
+    # Z-Score는 스케일이 정규화되어 있으므로 k값으로 배분 조절이 용이함.
+    
+    raw_allocation = k * z_score
+    
+    return np.clip(raw_allocation, 0.0, max_position)
+
+
 # 기본 전략 선택
 default_allocation = smart_allocation

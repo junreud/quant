@@ -33,8 +33,8 @@ def main():
         use_advanced_features=config['features']['use_advanced_features'],
         use_market_regime_features=config['features'].get('use_market_regime_features', True),
         use_feature_selection=config['features']['feature_selection']['enabled'],
-        feature_selection_method=config['features']['feature_selection']['method'],
-        top_k_features=config['features']['feature_selection']['top_k']
+        feature_selection_method=config['features']['feature_selection']['return_model']['method'],
+        top_k_features=config['features']['feature_selection']['return_model']['top_k']
     )
     
     df = pd.read_csv(train_path)
@@ -68,13 +68,33 @@ def main():
     logger.info(f"Tuning data: {len(X_tune)} samples")
     
     # 2. Run Tuner
-    tuner = HyperparameterTuner(n_trials=80, cv_splits=5) # 20 trials for demo/speed
-    best_params = tuner.optimize(X_tune, y_tune, df_context_tune)
+    tuner = HyperparameterTuner(n_trials=50, cv_splits=5)
+    
+    # 2.1 Tune Return Model
+    logger.info("🔧 Tuning Return Model...")
+    best_return_params = tuner.optimize(X_tune, y_tune, df_context_tune, model_type='return')
+    
+    # 2.2 Tune Risk Model
+    logger.info("🔧 Tuning Risk Model...")
+    # Risk target is abs(returns)
+    y_risk = y_tune.abs()
+    
+    # Use risk features if selected (optional, but good for consistency)
+    # For simplicity, we tune on all features or top K features.
+    # Ideally we should use the same feature selection as in pipeline.
+    # But here we use X_tune which already has features.
+    best_risk_params = tuner.optimize(X_tune, y_risk, df_context_tune, model_type='risk')
     
     # 3. Save Results
+    # Combine into config structure
+    final_params = {
+        'lgbm_return': best_return_params,
+        'lgbm_risk': best_risk_params
+    }
+    
     output_path = project_root / "conf" / "best_params.yaml"
     with open(output_path, 'w') as f:
-        yaml.dump(best_params, f)
+        yaml.dump(final_params, f)
         
     logger.info(f"✅ Best params saved to: {output_path}")
     logger.info("=" * 80)

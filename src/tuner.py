@@ -26,7 +26,7 @@ class HyperparameterTuner:
         self.best_params = None
         self.study = None
         
-    def optimize(self, X: pd.DataFrame, y: pd.Series, df_context: pd.DataFrame) -> Dict[str, Any]:
+    def optimize(self, X: pd.DataFrame, y: pd.Series, df_context: pd.DataFrame, model_type: str = 'return') -> Dict[str, Any]:
         """
         Run optimization.
         
@@ -35,23 +35,23 @@ class HyperparameterTuner:
         X : pd.DataFrame
             Features
         y : pd.Series
-            Target
+            Target (for risk model, this should be abs(returns))
         df_context : pd.DataFrame
             DataFrame containing 'forward_returns', 'risk_free_rate' for metric calculation.
             Must be aligned with X.
+        model_type : str
+            'return' or 'risk'
             
         Returns
         -------
         Dict
             Best parameters
         """
-        logger.info(f"Starting optimization with {self.n_trials} trials...")
+        logger.info(f"Starting {model_type} model optimization with {self.n_trials} trials...")
         
         def objective(trial):
             # Hyperparameter search space
             params = {
-                'objective': 'regression',
-                'metric': 'rmse',
                 'verbosity': -1,
                 'boosting_type': 'gbdt',
                 'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -67,6 +67,14 @@ class HyperparameterTuner:
                 'n_jobs': -1
             }
             
+            if model_type == 'return':
+                params['objective'] = 'regression'
+                params['metric'] = 'rmse'
+            elif model_type == 'risk':
+                params['objective'] = 'quantile'
+                params['metric'] = 'quantile'
+                params['alpha'] = 0.75
+            
             # CV Strategy
             cv = get_cv_strategy(
                 'purged_walkforward',
@@ -76,8 +84,10 @@ class HyperparameterTuner:
                 purge_gap=5
             )
             
-            metric_calculator = CompetitionMetric()
-            fold_scores = []
+            # For risk model, we might want to optimize for Quantile Loss directly
+            # For return model, we optimize for IC or Sharpe (via smart_allocation)
+            
+            scores = []
             
             for train_idx, val_idx in cv.split(X):
                 X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
@@ -94,27 +104,34 @@ class HyperparameterTuner:
                 # Predict
                 pred = model.predict(X_val)
                 
-                # Evaluate
-                allocations = smart_allocation(pred, center=1.0, sensitivity=20)
-                val_context = df_context.iloc[val_idx]
+                if model_type == 'return':
+                    # Optimize for IC (Information Coefficient)
+                    # Simple correlation between pred and actual
+                    score = np.corrcoef(pred, y_val)[0, 1]
+                    if np.isnan(score): score = 0
+                else: # risk
+                    # Optimize for Quantile Loss (minimize)
+                    # Pinball loss for quantile 0.75
+                    alpha = 0.75
+                    error = y_val - pred
+                    loss = np.maximum(alpha * error, (alpha - 1) * error)
+                    score = -np.mean(loss) # Maximize negative loss
                 
-                result = metric_calculator.calculate_score(
-                    allocations=allocations,
-                    forward_returns=val_context['forward_returns'].values,
-                    market_returns=val_context['forward_returns'].values, # Assuming market returns ~ forward returns for now or passed in context
-                    risk_free_rate=val_context['risk_free_rate'].values
-                )
-                
-                fold_scores.append(result['score'])
+                scores.append(score)
             
-            # Maximize mean score
-            return np.mean(fold_scores)
+            return np.mean(scores)
 
         self.study = optuna.create_study(direction='maximize')
         self.study.optimize(objective, n_trials=self.n_trials)
         
         self.best_params = self.study.best_params
-        logger.info(f"Best Score: {self.study.best_value:.6f}")
-        logger.info(f"Best Params: {self.best_params}")
+        # Add fixed params back
+        if model_type == 'return':
+            self.best_params.update({'objective': 'regression', 'metric': 'rmse', 'boosting_type': 'gbdt', 'verbosity': -1, 'random_state': 42})
+        else:
+            self.best_params.update({'objective': 'quantile', 'metric': 'quantile', 'alpha': 0.75, 'boosting_type': 'gbdt', 'verbosity': -1, 'random_state': 42})
+            
+        logger.info(f"Best {model_type} Score: {self.study.best_value:.6f}")
+        logger.info(f"Best {model_type} Params: {self.best_params}")
         
         return self.best_params

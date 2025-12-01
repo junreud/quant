@@ -23,6 +23,7 @@ try:
     from src.preprocessing import DataPreprocessor
     from src.features import FeatureEngineer
     from src.pipeline import Pipeline
+    from src.allocation import dynamic_risk_allocation
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     print(f"   Current directory: {os.getcwd()}")
@@ -43,6 +44,7 @@ except ImportError as e:
             from src.preprocessing import DataPreprocessor
             from src.features import FeatureEngineer
             from src.pipeline import Pipeline
+            from src.allocation import dynamic_risk_allocation
             found = True
             break
     
@@ -56,9 +58,10 @@ MODEL = None
 PIPELINE = None
 FEATURE_COLS = None
 HISTORY_BUFFER = None
+PRED_BUFFER = None
 
 
-def load_model(model_path: str = "simple_model.pkl"):
+def load_model(model_path: str = "dual_model.pkl"):
     """
     Load model and pipeline (called once at startup).
     
@@ -68,28 +71,35 @@ def load_model(model_path: str = "simple_model.pkl"):
         Path to model pickle file
     """
     global MODEL, PIPELINE, FEATURE_COLS
+    print("DEBUG: load_model called")
     
     if MODEL is not None:
+        print("DEBUG: MODEL already loaded")
         return  # Already loaded
     
     # Determine model path
-    # 1. Try provided path (relative to CWD)
-    if os.path.exists(model_path):
-        pass
-    # 2. Try relative to this script (e.g. ../models/simple_model.pkl)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # List of paths to check
+    paths_to_check = [
+        model_path, # As provided
+        os.path.join(script_dir, "..", "models", "dual_model.pkl"), # Local dev
+        os.path.join(script_dir, "dual_model.pkl"), # Same dir
+        "/kaggle/input/quant-model-v1/models/dual_model.pkl", # Kaggle
+        "/kaggle/input/quant-model-v1/dual_model.pkl",
+    ]
+    
+    found_path = None
+    for path in paths_to_check:
+        if os.path.exists(path):
+            found_path = path
+            break
+            
+    if found_path:
+        model_path = found_path
+        print(f"   Found model at: {model_path}")
     else:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Assuming script is in scripts/ and model is in models/
-        alt_path = os.path.join(script_dir, "..", "models", "simple_model.pkl")
-        if os.path.exists(alt_path):
-            model_path = alt_path
-            print(f"   Found model at: {model_path}")
-        else:
-            # 3. Try Kaggle input structure
-            kaggle_path = "/kaggle/input/quant-model-v1/models/simple_model.pkl"
-            if os.path.exists(kaggle_path):
-                model_path = kaggle_path
-                print(f"   Found model at: {model_path}")
+        print(f"⚠️ Model file not found. Checked: {paths_to_check}")
 
     print(f"📦 Loading model from {model_path}...")
     
@@ -97,6 +107,20 @@ def load_model(model_path: str = "simple_model.pkl"):
         model_data = pickle.load(f)
     
     MODEL = model_data # Dictionary containing 'model_return' and 'model_risk'
+    print(f"   Model type: {type(MODEL)}")
+    if isinstance(MODEL, dict):
+        print(f"   Model keys: {list(MODEL.keys())}")
+    else:
+        print(f"   Model content: {MODEL}")
+    
+    # Check if we loaded the wrapper dict or just the model dict
+    if 'model_return' not in MODEL and 'model' in MODEL:
+         # Maybe it's nested?
+         print("   ⚠️ 'model_return' not found, checking 'model' key...")
+         if isinstance(MODEL['model'], dict):
+             print(f"   Inner keys: {list(MODEL['model'].keys())}")
+             MODEL = MODEL['model'] # Unwrap if needed
+    
     PIPELINE = model_data['pipeline']  # 저장된 파이프라인 사용
     FEATURE_COLS = model_data['feature_cols']
     
@@ -109,11 +133,22 @@ def load_model(model_path: str = "simple_model.pkl"):
         HISTORY_BUFFER = pd.read_pickle(history_path)
         print(f"✅ History buffer loaded: {len(HISTORY_BUFFER)} samples")
     else:
-        print("⚠️ History buffer not found. Cold start (first few predictions may be inaccurate).")
+        print("⚠️ History buffer not found. Cold start.")
         HISTORY_BUFFER = pd.DataFrame()
+        
+    # Load Prediction History Buffer
+    global PRED_BUFFER
+    pred_history_path = os.path.join(os.path.dirname(model_path), 'pred_history.pkl')
+    if os.path.exists(pred_history_path):
+        with open(pred_history_path, 'rb') as f:
+            PRED_BUFFER = pickle.load(f)
+        print(f"✅ Prediction buffer loaded: {len(PRED_BUFFER)} samples")
+    else:
+        print("⚠️ Prediction buffer not found. Cold start.")
+        PRED_BUFFER = []
 
 
-def predict(test, model_path: str = "simple_model.pkl"):
+def predict(test, model_path: str = "dual_model.pkl"):
     """
     Predict allocation for test data.
     
@@ -160,12 +195,18 @@ def predict(test, model_path: str = "simple_model.pkl"):
         print(f"   Fallback to manual preprocessing...")
         
         # Fallback: Use raw features if possible (ignoring rolling)
-        X_test = pd.DataFrame()
+        # Construct dictionary first to ensure correct DataFrame shape
+        x_test_dict = {}
         for col in FEATURE_COLS:
             if col in test_pd.columns:
-                X_test[col] = test_pd[col].iloc[-1]
+                # Take the last value
+                val = test_pd[col].iloc[-1]
+                x_test_dict[col] = val
             else:
-                X_test[col] = 0.0
+                x_test_dict[col] = 0.0
+        
+        # Create 1-row DataFrame
+        X_test = pd.DataFrame([x_test_dict])
         
         # Fill NaN with 0
         X_test = X_test.fillna(0)
@@ -174,34 +215,57 @@ def predict(test, model_path: str = "simple_model.pkl"):
     # 모델 추론 (Dual Model)
     # ========================================
     # 1. Return Prediction
+    if isinstance(MODEL, dict):
+        # Debug print removed for production
+        pass
+    
+    if MODEL is None:
+        raise ValueError("MODEL is None in predict()")
+        
     pred_return = MODEL['model_return'].predict(X_test)[0]
     
     # 2. Risk Prediction
-    # Risk model might use different features, but we assume X_test has all features
-    # Pipeline usually returns all generated features.
-    # We need to select features if the model expects specific ones.
-    # But LGBM is robust to extra columns if feature names match.
-    # However, if we used feature selection, we should be careful.
-    # In run_pipeline.py, we saved 'feature_cols' which are ALL generated features.
-    # The models were trained on subsets (top_k).
-    # LightGBM selects features by name, so passing a superset DataFrame is fine.
-    
     pred_risk = MODEL['model_risk'].predict(X_test)[0]
     
     # ========================================
-    # Allocation Logic (Risk-Adjusted)
+    # Dynamic Allocation (Relative Strength)
     # ========================================
-    # k * (Return / Risk)
-    k = 0.5
-    vol_floor = 0.005 # Minimum volatility to prevent division by zero
+    global PRED_BUFFER
     
-    risk_val = max(pred_risk, vol_floor)
-    allocation = k * (pred_return / risk_val)
+    # Update Prediction Buffer
+    if PRED_BUFFER is None:
+        PRED_BUFFER = []
+        
+    PRED_BUFFER.append(pred_return)
     
-    # Clip to [0, 2]
-    allocation = max(0.0, min(2.0, float(allocation)))
+    # Keep max size (e.g., 200)
+    if len(PRED_BUFFER) > 200:
+        PRED_BUFFER.pop(0)
+        
+    # Calculate Rolling Stats
+    if len(PRED_BUFFER) < 2:
+        roll_mean = pred_return # Not enough data
+        roll_std = 1.0
+    else:
+        # Use last N (e.g., 20)
+        window = 20
+        recent_preds = PRED_BUFFER[-window:]
+        roll_mean = np.mean(recent_preds)
+        roll_std = np.std(recent_preds)
+        
+    # Dynamic Allocation Logic (Using src.allocation)
+    # This ensures consistency with the optimized strategy
+    allocation = dynamic_risk_allocation(
+        return_pred=pred_return,
+        risk_pred=pred_risk,
+        rolling_mean=roll_mean,
+        rolling_std=roll_std,
+        k=0.7,  # Optimized parameter
+        max_position=2.0
+    )
     
-    return allocation
+    # Ensure float
+    return float(allocation)
 
 
 if __name__ == "__main__":
@@ -212,12 +276,34 @@ if __name__ == "__main__":
     print("🧪 Local Testing")
     print("=" * 80)
     
-    # Create dummy test data
-    test = pl.DataFrame({
-        'D1': [0.5],
-        'D2': [0.3],
-        'E1': [0.1]
-    })
+    # Load model to get feature cols
+    try:
+        load_model()
+        if FEATURE_COLS:
+            # Create dummy data with correct columns
+            dummy_data = {col: [0.0] for col in FEATURE_COLS}
+            # Add some raw columns if needed by pipeline (e.g. 'open', 'close'...) 
+            # But pipeline transform might need specific raw columns.
+            # For inference test, we can just bypass pipeline transform if we provide features directly?
+            # No, predict() calls pipeline.transform.
+            
+            # Let's just create a dummy dataframe with some common raw columns
+            # and hope pipeline handles it or we hit the fallback.
+            # Actually, to hit fallback, we can force an error or just rely on the fact that 
+            # pipeline.transform will likely fail with missing raw columns.
+            
+            test = pl.DataFrame(dummy_data)
+            # Add raw cols just in case
+            test = test.with_columns([
+                pl.lit(100.0).alias('open'),
+                pl.lit(101.0).alias('close'),
+                pl.lit(1000).alias('volume'),
+            ])
+        else:
+             test = pl.DataFrame({'dummy': [1.0]})
+    except Exception as e:
+        print(f"⚠️ Failed to load model for testing: {e}")
+        test = pl.DataFrame({'dummy': [1.0]})
     
     try:
         result = predict(test)

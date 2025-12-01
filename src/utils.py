@@ -59,6 +59,32 @@ def load_config(config_path: str = "conf/config.yaml") -> Dict[str, Any]:
     
     with open(config_file, 'r') as f:
         config = yaml.safe_load(f)
+        
+    # Check for best_params.yaml and merge if exists
+    best_params_file = config_file.parent / "best_params.yaml"
+    if best_params_file.exists():
+        try:
+            with open(best_params_file, 'r') as f:
+                best_params = yaml.safe_load(f)
+            
+            if best_params:
+                # Deep merge or simple update?
+                # Simple update is enough for top-level keys like 'lgbm_return', 'lgbm_risk'
+                # But we should be careful not to overwrite other things if best_params is partial.
+                # The tuner saves full parameter dicts for these keys.
+                
+                # Update specific keys if they exist in best_params
+                for key in ['lgbm_return', 'lgbm_risk']:
+                    if key in best_params:
+                        if key in config and isinstance(config[key], dict) and isinstance(best_params[key], dict):
+                            config[key].update(best_params[key])
+                        else:
+                            config[key] = best_params[key]
+                        # logger is not available inside function easily, but we can print
+                        print(f"✅ Loaded best parameters for {key} from {best_params_file}")
+                        
+        except Exception as e:
+            print(f"⚠️ Failed to load best_params.yaml: {e}")
     
     return config
 

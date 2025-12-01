@@ -16,6 +16,10 @@ ENV/
 data/raw/*.csv
 data/processed/*.csv
 *.csv
+data/acf_plots/*.png
+data/acf_plots/*.jpg
+data/acf_plots/*.csv
+data/acf_plots/*.txt
 
 # Models
 models/*.pkl
